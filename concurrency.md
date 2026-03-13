@@ -150,8 +150,6 @@ Expected count: 10000
 
 Internally it does something like this:
 
-
-
 ```
 loop:
  oldValue = read current value
@@ -245,8 +243,6 @@ Example:
 Then we get many CAS retries.
 
 In such cases JVM uses optimizations like:
-
-
 
 > LongAdder
 
@@ -1997,5 +1993,2690 @@ memory exhaustion
 CPU thrashing
 system crash
 ```
+
+***
+
+### Next Exercise (Much Harder)
+
+Let’s test **deep executor understanding**.
+
+What happens here?
+
+```java
+ThreadPoolExecutor executor =
+    new ThreadPoolExecutor(
+        2,
+        4,
+        60,
+        TimeUnit.SECONDS,
+        new ArrayBlockingQueue<>(2)
+    );
+
+for(int i=0;i<10;i++){
+    int task = i;
+
+    executor.submit(() -> {
+        Thread.sleep(10000);
+        System.out.println(task);
+        return null;
+    });
+}
+```
+
+First, here is the pool configuration again:
+
+```java
+ThreadPoolExecutor executor =
+    new ThreadPoolExecutor(
+        2,                // corePoolSize
+        4,                // maximumPoolSize
+        60,
+        TimeUnit.SECONDS,
+        new ArrayBlockingQueue<>(2) // queue capacity = 2
+    );
+```
+
+Key parameters:
+
+```
+corePoolSize = 2
+maxPoolSize = 4
+queue capacity = 2
+```
+
+Tasks submitted:
+
+```
+10 tasks
+each sleeps for 10 seconds
+```
+
+***
+
+#### The Actual Executor Algorithm
+
+When a task arrives, Java follows this **strict order**:
+
+1️⃣ If `runningThreads < corePoolSize` → **create new thread**
+
+2️⃣ Else → **try to enqueue task**
+
+3️⃣ If queue is **full** → **create new thread (if < maxPoolSize)**
+
+4️⃣ If threads == maxPoolSize → **reject task**
+
+This order is extremely important.
+
+***
+
+# Step-by-Step Execution
+
+### Task 0
+
+```
+threads = 0 < core(2)
+```
+
+Create **Thread-1**
+
+```
+Thread-1 running task0
+```
+
+***
+
+### Task 1
+
+```
+threads = 1 < core(2)
+```
+
+Create **Thread-2**
+
+```
+Thread-2 running task1
+```
+
+***
+
+### Task 2
+
+Now:
+
+```
+threads = 2 (core reached)
+```
+
+Executor tries **queue**.
+
+```
+Queue: [task2]
+```
+
+***
+
+### Task 3
+
+Queue still has space.
+
+```
+Queue: [task2, task3]
+```
+
+Queue is now **FULL**.
+
+***
+
+### Task 4
+
+Queue full → check threads.
+
+```
+threads = 2
+max = 4
+```
+
+So create **Thread-3**
+
+```
+Thread-3 running task4
+```
+
+***
+
+### Task 5
+
+Queue still full → thread creation allowed.
+
+Create **Thread-4**
+
+```
+Thread-4 running task5
+```
+
+Now:
+
+```
+threads = 4 (max reached)
+queue = full
+```
+
+***
+
+### Task 6
+
+Executor tries:
+
+```
+queue full
+threads == max
+```
+
+➡ **REJECTED**
+
+Throws:
+
+```
+RejectedExecutionException
+```
+
+The same happens for:
+
+```
+task6
+task7
+task8
+task9
+```
+
+***
+
+# Final State
+
+Threads created:
+
+```
+4 threads
+```
+
+Running tasks:
+
+```
+task0
+task1
+task4
+task5
+```
+
+Queued tasks:
+
+```
+task2
+task3
+```
+
+Rejected tasks:
+
+```
+task6
+task7
+task8
+task9
+```
+
+***
+
+# Important Correction in Your Answer
+
+You said:
+
+> thread 2 and 3 will go into queue
+
+Correct.
+
+But then:
+
+> it will create thread 4 and 5
+
+❌ Slight mistake.
+
+ThreadPoolExecutor will create **only up to maxPoolSize threads total**, not additional ones.
+
+So:
+
+```
+Thread-1
+Thread-2
+Thread-3
+Thread-4
+```
+
+Total = **4 threads**.
+
+***
+
+# Timeline Visualization
+
+```
+Submit task0 → Thread1
+Submit task1 → Thread2
+
+Submit task2 → Queue
+Submit task3 → Queue
+
+Submit task4 → Thread3
+Submit task5 → Thread4
+
+Submit task6 → REJECT
+Submit task7 → REJECT
+Submit task8 → REJECT
+Submit task9 → REJECT
+```
+
+***
+
+# Interview Insight
+
+Most developers assume the order is:
+
+```
+threads → max → queue
+```
+
+But the real order is:
+
+```
+core threads → queue → max threads
+```
+
+That detail is why this question shows up in **senior Java interviews**.
+
+***
+
+# One Small Brain-Twister (very common)
+
+What changes if we use:
+
+```
+new LinkedBlockingQueue<>()
+```
+
+instead of:
+
+```
+new ArrayBlockingQueue<>(2)
+```
+
+in the same thread pool?
+
+Would the pool ever create **Thread-3 and Thread-4**?
+
+
+
+We change only this:
+
+```java
+new ArrayBlockingQueue<>(2)
+```
+
+to
+
+```java
+new LinkedBlockingQueue<>()
+```
+
+Everything else stays the same:
+
+```
+corePoolSize = 2
+maximumPoolSize = 4
+queue = LinkedBlockingQueue (unbounded)
+```
+
+***
+
+# Step-by-Step Execution
+
+### Task 0
+
+```
+threads = 0 < core(2)
+```
+
+Create **Thread-1**
+
+```
+Thread-1 → task0 (sleep 10s)
+```
+
+***
+
+### Task 1
+
+```
+threads = 1 < core(2)
+```
+
+Create **Thread-2**
+
+```
+Thread-2 → task1 (sleep 10s)
+```
+
+***
+
+### Task 2
+
+Now:
+
+```
+threads = 2 == corePoolSize
+```
+
+Executor tries to **enqueue** the task.
+
+Queue has **unlimited capacity**, so it succeeds.
+
+```
+Queue: [task2]
+```
+
+***
+
+### Task 3
+
+```
+Queue: [task2, task3]
+```
+
+***
+
+### Task 4
+
+```
+Queue: [task2, task3, task4]
+```
+
+***
+
+### Tasks 5–9
+
+All of them go to the queue.
+
+Final queue:
+
+```
+[task2, task3, task4, task5, task6, task7, task8, task9]
+```
+
+***
+
+# Final State
+
+Threads created:
+
+```
+Thread-1
+Thread-2
+```
+
+Queue:
+
+```
+8 tasks waiting
+```
+
+Execution flow:
+
+```
+Thread-1 finishes task0 → takes task2
+Thread-2 finishes task1 → takes task3
+```
+
+And so on.
+
+***
+
+# Key Insight (VERY Important)
+
+**ThreadPoolExecutor will NOT create threads beyond&#x20;****`corePoolSize`****&#x20;if the queue never fills.**
+
+Because the algorithm is:
+
+```
+1. Fill core threads
+2. Queue tasks
+3. If queue full → create extra threads
+```
+
+But with an **unbounded queue**:
+
+```
+queue never becomes full
+```
+
+Therefore:
+
+```
+threads never grow beyond corePoolSize
+```
+
+So in this example:
+
+```
+maxPoolSize = 4
+```
+
+is **completely useless**.
+
+The pool will **never create Thread-3 or Thread-4**.
+
+***
+
+# Why This Is Dangerous
+
+If tasks are slow:
+
+```
+incoming tasks = 1000/sec
+processing capacity = 2/sec
+```
+
+Queue becomes:
+
+```
+1M
+5M
+20M
+...
+
+```
+
+Eventually:
+
+```
+OutOfMemoryError
+```
+
+This is **exactly why&#x20;****`Executors.newFixedThreadPool()`****&#x20;is considered dangerous**.
+
+Because internally it uses:
+
+```
+LinkedBlockingQueue (unbounded)
+```
+
+***
+
+# The Production Fix
+
+Instead of:
+
+```java
+Executors.newFixedThreadPool(10);
+```
+
+Senior engineers usually do:
+
+```java
+new ThreadPoolExecutor(
+    10,
+    20,
+    60,
+    TimeUnit.SECONDS,
+    new ArrayBlockingQueue<>(1000)
+);
+
+```
+
+This gives **bounded memory**.
+
+***
+
+# One Final Interview Trap (Very Famous)
+
+What happens here?
+
+```java
+ThreadPoolExecutor executor =
+    new ThreadPoolExecutor(
+        0,
+        4,
+        60,
+        TimeUnit.SECONDS,
+        new SynchronousQueue<>()
+    );
+
+```
+
+Tasks:
+
+```java
+for(int i=0;i<5;i++){
+    executor.submit(() -> {
+        Thread.sleep(10000);
+        return null;
+    });
+}
+
+```
+
+Questions:
+
+1️⃣ How many threads will be created?
+
+2️⃣ Will any task go to queue?
+
+3️⃣ Will rejection happen?
+
+This scenario actually reveals **how&#x20;****`CachedThreadPool`****&#x20;works internally**, and understanding it unlocks one of the most interesting executor behaviors.
+
+The two key observations you already made are exactly the ones that matter:
+
+* `corePoolSize = 0`
+* `SynchronousQueue` has **no capacity**
+
+Let’s finish the reasoning step-by-step.
+
+***
+
+# Pool Configuration
+
+```java
+ThreadPoolExecutor executor =
+    new ThreadPoolExecutor(
+        0,                 // corePoolSize
+        4,                 // maxPoolSize
+        60,
+        TimeUnit.SECONDS,
+        new SynchronousQueue<>()
+    );
+```
+
+Key properties:
+
+```
+corePoolSize = 0
+maxPoolSize = 4
+queue = SynchronousQueue
+```
+
+Important rule about **SynchronousQueue**:
+
+```
+It cannot store tasks.
+A task must be handed directly to a worker thread.
+```
+
+So there is **no buffering**.
+
+***
+
+# Executor Algorithm Reminder
+
+When a task arrives:
+
+1. If `threads < corePoolSize` → create thread
+2. Else try to **enqueue task**
+3. If queue full → create thread (if `< maxPoolSize`)
+4. Else → reject
+
+***
+
+# Step-by-Step Execution
+
+### Task 0
+
+```
+threads = 0
+corePoolSize = 0
+```
+
+Condition:
+
+```
+threads < corePoolSize → false
+```
+
+So executor tries to **enqueue**.
+
+But:
+
+```
+SynchronousQueue cannot hold tasks
+```
+
+So enqueue fails immediately.
+
+Next step:
+
+```
+threads < maxPoolSize → true
+```
+
+Create **Thread-1**
+
+Thread-1 runs task0.
+
+***
+
+### Task 1
+
+Same process:
+
+* cannot enqueue
+* threads < max
+
+Create **Thread-2**
+
+***
+
+### Task 2
+
+Create **Thread-3**
+
+***
+
+### Task 3
+
+Create **Thread-4**
+
+***
+
+### Task 4
+
+Now:
+
+```
+threads = 4
+maxPoolSize = 4
+```
+
+Executor tries:
+
+1. enqueue → fails (SynchronousQueue)
+2. create thread → not allowed (max reached)
+
+Therefore:
+
+```
+RejectedExecutionException
+```
+
+***
+
+# Final Result
+
+Threads created:
+
+```
+Thread-1
+Thread-2
+Thread-3
+Thread-4
+```
+
+Running tasks:
+
+```
+task0
+task1
+task2
+task3
+```
+
+Rejected:
+
+```
+task4
+```
+
+***
+
+# Answers to the Questions
+
+### 1️⃣ How many threads are created?
+
+```
+4 threads
+```
+
+***
+
+### 2️⃣ Will any task go to queue?
+
+```
+No
+```
+
+Because:
+
+```
+SynchronousQueue cannot store tasks
+```
+
+***
+
+### 3️⃣ Will rejection happen?
+
+Yes.
+
+```
+task4 → rejected
+```
+
+***
+
+# Why This Design Exists
+
+This configuration is almost the same idea behind:
+
+```
+Executors.newCachedThreadPool()
+```
+
+Internally it uses:
+
+```
+corePoolSize = 0
+maxPoolSize = Integer.MAX_VALUE
+queue = SynchronousQueue
+```
+
+Meaning:
+
+```
+If a thread is free → reuse it
+Otherwise → create new thread
+```
+
+That’s why cached pools **scale threads aggressively**.
+
+***
+
+# One Very Interesting Insight
+
+With a `SynchronousQueue`, the pool behaves like this:
+
+```
+No queue
+Direct handoff
+Thread-per-task (until max)
+```
+
+So the execution model becomes:
+
+```
+Task → Thread
+Task → Thread
+Task → Thread
+```
+
+instead of
+
+```
+Task → Queue → Thread
+```
+
+***
+
+# Quick Challenge (Very Good Mental Exercise)
+
+Predict what happens here:
+
+```java
+ThreadPoolExecutor executor =
+    new ThreadPoolExecutor(
+        2,
+        4,
+        60,
+        TimeUnit.SECONDS,
+        new SynchronousQueue<>()
+    );
+
+for(int i = 0; i < 6; i++) {
+    executor.submit(() -> {
+        Thread.sleep(10000);
+        return null;
+    });
+}
+
+```
+
+Try to determine:
+
+1️⃣ How many threads are created
+
+2️⃣ Which task gets rejected
+
+3️⃣ Does the queue ever get used
+
+This one forces you to combine **core threads + synchronous queue**, which is a **classic executor interview puzzle**.
+
+You said:
+
+> 2 threads created → queue can't hold → create thread3 & thread4 → rest rejected
+
+✅ **100% correct reasoning.**
+
+This shows you understand the **three key executor behaviors**:
+
+* **core thread creation**
+* **queue behavior**
+* **max thread expansion**
+
+
+
+# Common Atomic Classes
+
+Java provides many atomic types.
+
+### Numbers
+
+```java
+AtomicInteger
+AtomicLong
+AtomicDouble (vialibraries)
+```
+
+### References
+
+```java
+AtomicReference<T>
+```
+
+### Arrays
+
+```java
+AtomicIntegerArray
+```
+
+### Field Updaters
+
+```java
+AtomicIntegerFieldUpdater
+```
+
+### Advanced
+
+```java
+LongAdder
+LongAccumulator
+```
+
+# Important Limitation: ABA Problem
+
+CAS compares **value only**, not history.
+
+Example:
+
+```
+Thread A reads value = A
+Thread B changes A → B → A
+Thread A performs CAS
+```
+
+CAS succeeds even though the value changed in between.
+
+This is the **ABA problem**.
+
+Java solves this using:
+
+```java
+AtomicStampedReference
+AtomicMarkableReference
+```
+
+***
+
+`AtomicInteger` guarantees **atomicity of the increment operation**, but it **does NOT guarantee when threads run**.
+
+So the issue here is **not a race condition**, but **thread scheduling**.
+
+We have:
+
+```java
+AtomicInteger x = new AtomicInteger(0);
+
+Thread t1 = new Thread(() -> {
+    x.incrementAndGet();
+});
+
+Thread t2 = new Thread(() -> {
+    x.incrementAndGet();
+});
+
+t1.start();
+t2.start();
+
+System.out.println(x.get());
+
+```
+
+***
+
+### The Key Idea
+
+`AtomicInteger` guarantees **atomicity of the increment operation**, but it **does NOT guarantee when threads run**.
+
+So the issue here is **not a race condition**, but **thread scheduling**.
+
+***
+
+### Possible Execution Orders
+
+##### Case 1 — Main thread prints immediately
+
+```
+main: print x (0)
+t1: increment
+t2: increment
+```
+
+Output:
+
+```
+0
+```
+
+Because both worker threads haven't run yet.
+
+***
+
+### Case 2 — One thread runs first
+
+```
+t1: increment → x = 1
+main: print
+t2: increment
+```
+
+Output:
+
+```
+1
+```
+
+***
+
+### Case 3 — Both threads finish first
+
+```
+t1: increment
+t2: increment
+main: print
+```
+
+Output:
+
+```
+2
+```
+
+***
+
+# Possible Outputs
+
+You correctly said:
+
+```
+0
+1
+2
+```
+
+✅ All are possible.
+
+***
+
+# Important Insight
+
+Even though `AtomicInteger` ensures:
+
+```
+incrementAndGet() is thread-safe
+```
+
+It **does not ensure completion order**.
+
+Atomicity guarantees:
+
+```
+No lost updates
+```
+
+But it **does not guarantee timing**.
+
+***
+
+# How to Guarantee Output = 2
+
+We must **wait for both threads**.
+
+### Option 1 — `join()` (simplest)
+
+```java
+t1.start();
+t2.start();
+
+t1.join();
+t2.join();
+
+System.out.println(x.get());
+
+```
+
+Now output is always:
+
+```
+2
+```
+
+***
+
+### Option 2 — `CountDownLatch`
+
+```java
+CountDownLatch latch = new CountDownLatch(2);
+
+Thread t1 = new Thread(() -> {
+    x.incrementAndGet();
+    latch.countDown();
+});
+
+Thread t2 = new Thread(() -> {
+    x.incrementAndGet();
+    latch.countDown();
+});
+
+t1.start();
+t2.start();
+
+latch.await();
+
+System.out.println(x.get());
+
+```
+
+***
+
+### Option 3 — ExecutorService
+
+```java
+ExecutorService executor = Executors.newFixedThreadPool(2);
+
+executor.submit(() -> x.incrementAndGet());
+executor.submit(() -> x.incrementAndGet());
+
+executor.shutdown();
+executor.awaitTermination(1, TimeUnit.SECONDS);
+
+System.out.println(x.get());
+
+```
+
+***
+
+# Important Concurrency Lesson
+
+This example teaches the difference between:
+
+| Concept    | Meaning                                   |
+| ---------- | ----------------------------------------- |
+| Atomicity  | Operation happens without race conditions |
+| Ordering   | Which thread runs first                   |
+| Completion | When threads finish                       |
+
+`AtomicInteger` solves:
+
+```
+atomicity
+```
+
+But not:
+
+```
+thread completion
+```
+
+***
+
+# One More Interesting Twist
+
+What happens if we replace `AtomicInteger` with:
+
+```
+int x = 0;
+```
+
+and inside threads do:
+
+```
+x++;
+```
+
+Then even **after waiting for both threads**, the result could be:
+
+```
+1
+```
+
+Because:
+
+```
+x++ is not atomic
+```
+
+That contrast is exactly **why atomic variables exist**.
+
+***
+
+# LOCKS AND REENTRANT LOCKS 
+
+We’ll build the picture in this order:
+
+1. Why Java introduced the **Lock API**
+2. The **`Lock`****&#x20;interface**
+3. **`ReentrantLock`** (core implementation)
+4. **Fair vs Non-fair locks**
+5. Important methods (`tryLock`, `lockInterruptibly`, etc.)
+6. **Condition variables**
+7. When to use **locks vs synchronized**
+
+***
+
+### 1. Why Java Introduced Explicit Locks
+
+Before Java 5, synchronization was done with:
+
+```java
+synchronized(lockObject) {
+    // critical section
+}
+
+```
+
+or
+
+```java
+public synchronized void increment() {
+    count++;
+}
+
+```
+
+This works well but has **limitations**:
+
+| Problem                         | Explanation           |
+| ------------------------------- | --------------------- |
+| Cannot try acquiring lock       | Thread must wait      |
+| Cannot interrupt lock wait      | `synchronized` blocks |
+| Cannot implement fairness       | No queue control      |
+| One condition queue per monitor | Limited coordination  |
+
+So Java introduced the **Lock framework** in `java.util.concurrent.locks`.
+
+***
+
+### 2. The `Lock` Interface
+
+The `Lock` interface gives **manual control** over locking.
+
+Example:
+
+```java
+Lock lock = new ReentrantLock();
+
+lock.lock();
+try {
+    // critical section
+} finally {
+    lock.unlock();
+}
+
+```
+
+Important: **always unlock in&#x20;****`finally`**.
+
+Why?
+
+```java
+lock.lock();
+criticalWork();
+lock.unlock();
+```
+
+If `criticalWork()` throws an exception:
+
+```
+lock never released
+deadlock
+```
+
+The safe pattern:
+
+```java
+lock.lock();
+try {
+    criticalWork();
+} finally {
+    lock.unlock();
+}
+```
+
+***
+
+### 3. First Example
+
+Let’s recreate the counter example with `ReentrantLock`.
+
+```java
+import java.util.concurrent.locks.*;
+
+class Counter {
+
+    private int count = 0;
+    private final Lock lock = new ReentrantLock();
+
+    public void increment() {
+        lock.lock();
+
+        try {
+            count++;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public int get() {
+        return count;
+    }
+}
+
+```
+
+Multiple threads can call `increment()` safely.
+
+***
+
+### 4. What Does "Reentrant" Mean?
+
+Reentrant = **same thread can acquire the same lock multiple times**.
+
+Example:
+
+```java
+Lock lock = new ReentrantLock();
+
+lock.lock();
+lock.lock();
+lock.lock();
+
+lock.unlock();
+lock.unlock();
+lock.unlock();
+
+```
+
+This works.
+
+The lock keeps an **internal hold count**.
+
+```
+Thread A acquires lock → count = 1
+Thread A acquires again → count = 2
+Thread A acquires again → count = 3
+```
+
+Only when count becomes **0** does the lock release.
+
+This behavior is the same as Java’s **intrinsic monitor locks** (`synchronized`).
+
+***
+
+### 5. Fair vs Non-Fair Locks
+
+You can create a fair lock:
+
+```java
+Lock lock = new ReentrantLock(true);
+```
+
+Default:
+
+```java
+new ReentrantLock()
+```
+
+is **non-fair**.
+
+##### Non-Fair Lock (default)
+
+Threads can **jump the queue**.
+
+```
+Thread1 waiting
+Thread2 waiting
+Thread3 arrives → gets lock first
+```
+
+This improves **throughput**.
+
+***
+
+##### Fair Lock
+
+First-come-first-serve:
+
+```
+Thread1 → lock
+Thread2 → next
+Thread3 → next
+```
+
+Fairness reduces starvation but can reduce performance.
+
+***
+
+### 6. `tryLock(timeout)` (Very Important)
+
+wait but not forever
+
+```java
+if (lock.tryLock(2, TimeUnit.SECONDS)) {
+    try {
+        // Got lock within 2 seconds
+    } finally {
+        lock.unlock();
+    }
+} else {
+    // 2 seconds passed, still couldn't get it
+    System.out.println("Timed out");
+}
+
+```
+
+This is extremely useful for **deadlock avoidance**.
+
+***
+
+## 7. `tryLock()` in ReentrantLock
+
+Instead of **blocking** like `lock()`, `tryLock()` attempts to acquire the lock and **immediately returns a boolean** — `true` if it got the lock, `false` if not.
+
+###### Basic `tryLock()`
+
+```java
+ReentrantLock lock = new ReentrantLock();
+
+if (lock.tryLock()) {
+    try {
+        // Got the lock, do work
+    } finally {
+        lock.unlock();
+    }
+} else {
+    // Couldn't get lock, do something else
+    System.out.println("Lock busy, skipping...");
+}
+```
+
+No waiting at all — if the lock is taken, it moves on instantly.
+
+
+vs `lock()` comparison
+
+|                 | `lock()`           | `tryLock()`                 | `tryLock(timeout)`                |
+| --------------- | ------------------ | --------------------------- | --------------------------------- |
+| If lock is busy | Blocks forever     | Returns `false` immediately | Waits up to timeout               |
+| Return type     | `void`             | `boolean`                   | `boolean`                         |
+| Use case        | Must have the lock | Skip if busy                | Retry logic / deadlock prevention |
+
+##### Key use case — **deadlock prevention**
+
+```java
+// Two threads needing two locks — classic deadlock scenario
+boolean gotBoth = false;
+if (lock1.tryLock()) {
+    try {
+        if (lock2.tryLock()) {
+            try {
+                // Got both locks safely
+                gotBoth = true;
+            } finally {
+                lock2.unlock();
+            }
+        }
+    } finally {
+        lock1.unlock();
+    }
+}
+if (!gotBoth) {
+    // Back off and retry later instead of deadlocking
+}
+```
+
+With `lock()`, if Thread A holds `lock1` and waits for `lock2`, while Thread B holds `lock2` and waits for `lock1` — **deadlock**. `tryLock()` lets you back off instead of waiting forever.
+
+***
+
+## 8. `lockInterruptibly()`
+
+Normally:
+
+```
+lock.lock();
+
+```
+
+If a thread waits for the lock, it **cannot be interrupted**.
+
+But with:
+
+```java
+lock.lockInterruptibly();
+```
+
+the thread **can be interrupted** while waiting.
+
+Example:
+
+```java
+try {
+    lock.lockInterruptibly();
+} catch (InterruptedException e) {
+    System.out.println("Interrupted while waiting");
+}
+
+```
+
+This is **very useful in responsive systems**.
+
+***
+
+## 9. Condition Variables
+
+This is where `ReentrantLock` becomes **much more powerful than synchronized**.
+
+With `synchronized`, we have:
+
+```java
+wait()
+notify()
+notifyAll()
+
+```
+
+But **only one wait queue exists**.
+
+With locks we can create **multiple condition queues**.
+
+Example:
+
+```java
+Lock lock = new ReentrantLock();
+Condition condition = lock.newCondition();
+```
+
+Threads can:
+
+```java
+condition.await();
+condition.signal();
+```
+
+
+
+***
+
+## Example: Producer Consumer
+
+```java
+Lock lock = new ReentrantLock();
+Condition notFull = lock.newCondition();
+Condition notEmpty = lock.newCondition();
+
+```
+
+Producer waits:
+
+```java
+notFull.await();
+```
+
+Consumer signals:
+
+```java
+notFull.signal();
+```
+
+Multiple conditions allow **fine-grained coordination**.
+
+***
+
+### 10. Lock vs Synchronized
+
+| Feature             | synchronized | Lock         |
+| ------------------- | ------------ | ------------ |
+| Simplicity          | Easy         | More verbose |
+| try acquire         | ❌            | ✅            |
+| interruptible wait  | ❌            | ✅            |
+| fairness control    | ❌            | ✅            |
+| multiple conditions | ❌            | ✅            |
+
+So rule of thumb:
+
+```
+Use synchronized for simple cases
+Use Lock for advanced concurrency control
+```
+
+***
+
+### 11. Important Internal Detail
+
+`ReentrantLock` internally uses **AQS (AbstractQueuedSynchronizer)**.
+
+This is the **core framework behind many Java concurrency utilities**:
+
+```java
+ReentrantLock
+Semaphore
+CountDownLatch
+FutureTask
+```
+
+All built on AQS.
+
+Understanding this will eventually explain **how Java manages lock queues and CAS loops**.
+
+***
+
+# 12. Small Exercise
+
+What happens here?
+
+```java
+Lock lock = new ReentrantLock();
+
+lock.lock();
+
+try {
+    lock.lock();
+    System.out.println("Inside");
+} finally {
+    lock.unlock();
+}
+
+lock.unlock();
+
+```
+
+Will it:
+
+A) Deadlock
+
+B) Throw exception
+
+C) Print "Inside"
+
+Think carefully—this checks if you truly understand **reentrancy**.
+
+
+### Exercise Answer
+
+> main thread acquires lock → acquires again → prints → unlocks twice
+
+Exactly right.
+
+Execution:
+
+```
+Thread(main) acquires lock → holdCount = 1
+Thread(main) acquires lock again → holdCount = 2
+print "Inside"
+
+unlock → holdCount = 1
+unlock → holdCount = 0
+lock released
+
+```
+
+Output:
+
+```
+Inside
+```
+
+This works because **ReentrantLock is reentrant**.
+
+***
+
+# 2. Now the Important Part: AQS
+
+AQS stands for:
+
+```
+AbstractQueuedSynchronizer
+```
+
+It is a **framework used to build locks and synchronizers**.
+
+Most of Java's concurrency tools are built on top of AQS.
+
+Examples:
+
+```
+ReentrantLock
+Semaphore
+CountDownLatch
+ReentrantReadWriteLock
+FutureTask
+```
+
+Instead of every class implementing complex synchronization logic, Java provides **AQS as a reusable foundation**.
+
+Think of it as:
+
+```
+Low-level concurrency engine
+```
+
+***
+
+### 3. What Problem AQS Solves
+
+When building a lock, you must handle:
+
+```
+thread acquisition
+waiting threads
+thread queues
+fairness
+blocking
+unblocking
+```
+
+This is extremely complex.
+
+AQS provides:
+
+```
+state management
+FIFO wait queue
+blocking/unblocking threads
+CAS-based synchronization
+```
+
+So lock implementations only define **how the state changes**.
+
+***
+
+# 4. Core Concept of AQS
+
+AQS manages **one integer state**:
+
+```
+int state
+```
+
+This state represents the **synchronization status**.
+
+Examples:
+
+### ReentrantLock
+
+```
+state = number of lock holds
+```
+
+Example:
+
+```
+state = 0 → unlocked
+state = 1 → locked once
+state = 2 → same thread reentered
+```
+
+***
+
+### Semaphore
+
+```
+state = permits available
+```
+
+Example:
+
+```
+state = 5 → 5 permits left
+```
+
+***
+
+### CountDownLatch
+
+```
+state = remaining count
+```
+
+Example:
+
+```
+state = 3 → waiting for 3 events
+```
+
+***
+
+# 5. AQS Uses CAS
+
+Remember our earlier CAS discussion?
+
+AQS heavily uses:
+
+```java
+compareAndSetState()
+```
+
+Example:
+
+```java
+if state == expected
+    update state
+```
+
+This ensures **atomic updates without locks**.
+
+***
+
+# 6. AQS Wait Queue
+
+If a thread **fails to acquire the lock**, AQS places it in a **queue**.
+
+Structure:
+
+```
+Head → Node → Node → Node
+```
+
+Each node represents a **waiting thread**.
+
+Example:
+
+```
+Thread1 holds lock
+
+Thread2 waiting
+Thread3 waiting
+Thread4 waiting
+```
+
+Queue:
+
+```
+HEAD → T2 → T3 → T4
+```
+
+***
+
+# 7. Simplified ReentrantLock Logic
+
+When `lock()` is called:
+
+### Step 1 — Try CAS
+
+```java
+if state == 0
+    CAS(state,0,1)
+```
+
+If successful:
+
+```
+thread becomes owner
+```
+
+Fast path (no blocking).
+
+***
+
+### Step 2 — Reentrancy Check
+
+If the **same thread already owns the lock**:
+
+```java
+state++
+```
+
+This enables **reentrant behavior**.
+
+***
+
+### Step 3 — Failure
+
+If another thread holds the lock:
+
+```
+thread added to wait queue
+thread parked (blocked)
+```
+
+***
+
+# 8. Unlock Logic
+
+When `unlock()` is called:
+
+```
+state--
+```
+
+If:
+
+```
+state == 0
+```
+
+then:
+
+```
+lock fully released
+next thread in queue is unparked
+```
+
+***
+
+# 9. Visual Flow
+
+```
+Thread tries lock
+        │
+        ▼
+   CAS state?
+    │      │
+   YES     NO
+    │      │
+ lock acquired
+           │
+           ▼
+     add to queue
+           │
+           ▼
+       park thread
+
+```
+
+***
+
+# 10. Internal Structure of AQS
+
+Simplified internal fields:
+
+```
+volatile int state;
+Node head;
+Node tail;
+```
+
+Node structure:
+
+```
+Thread reference
+next node
+prev node
+wait status
+```
+
+Queue type:
+
+```
+CLH queue (variant)
+```
+
+***
+
+# 11. Why AQS Is Brilliant
+
+It combines:
+
+```
+CAS
+queueing
+blocking
+```
+
+into one framework.
+
+Benefits:
+
+```
+scalable
+high-performance
+reusable
+```
+
+Instead of writing lock algorithms repeatedly.
+
+***
+
+# 12. Example: ReentrantLock Built on AQS
+
+Internally:
+
+```
+ReentrantLock
+      ↓
+Sync class
+      ↓
+extends AbstractQueuedSynchronizer
+```
+
+The `Sync` class implements:
+
+```java
+tryAcquire()
+tryRelease()
+```
+
+AQS handles the rest.
+
+***
+
+# 13. Real Code Example (Simplified)
+
+Inside `ReentrantLock`:
+
+```java
+protected final boolean tryAcquire(int acquires) {
+
+    int c = getState();
+
+    if (c == 0) {
+
+        if (compareAndSetState(0, acquires)) {
+            setExclusiveOwnerThread(Thread.currentThread());
+            return true;
+        }
+
+    }
+
+    else if (Thread.currentThread() == getOwner()) {
+
+        setState(c + acquires);
+        return true;
+
+    }
+
+    return false;
+}
+
+```
+
+That logic implements:
+
+```
+first acquire
+reentrant acquire
+```
+
+***
+
+# 14. Why AQS Is Important for Interviews
+
+Many concurrency primitives rely on it.
+
+Understanding AQS helps you understand:
+
+```
+locks
+semaphores
+latches
+futures
+```
+
+All of them use the same internal engine.
+
+***
+
+# 15. Where You’ll See AQS Again
+
+Next topics that rely on it:
+
+```
+Semaphore
+CountDownLatch
+ReadWriteLock
+StampedLock
+FutureTask
+```
+
+***
+
+# Before moving forward, one quick thinking check
+
+Imagine this code:
+
+```java
+ReentrantLock lock = new ReentrantLock();
+
+Thread t1 = new Thread(() -> {
+    lock.lock();
+    try {
+        Thread.sleep(5000);
+    } finally {
+        lock.unlock();
+    }
+});
+
+Thread t2 = new Thread(() -> {
+    lock.lock();
+    try {
+        System.out.println("Acquired");
+    } finally {
+        lock.unlock();
+    }
+});
+
+```
+
+Question:
+
+```
+What happens to Thread t2 while t1 holds the lock?
+```
+
+Does it:
+
+A) Spin continuously
+
+B) Sleep / block
+
+C) Crash
+
+D) Retry CAS forever
+
+This checks if you understand **how AQS parks threads**.
+
+***
+
+# Step-by-Step Execution
+
+### Thread t1 starts
+
+```
+lock.lock();
+```
+
+Inside `ReentrantLock.lock()`:
+
+1. `state == 0`
+2. CAS succeeds
+
+```
+CAS(state, 0 → 1)
+```
+
+Now:
+
+```
+state = 1
+owner = t1
+```
+
+`t1` enters the critical section.
+
+***
+
+### Thread t2 starts
+
+```
+lock.lock();
+```
+
+Now internally:
+
+```
+state = 1
+owner = t1
+```
+
+So `t2` cannot acquire the lock.
+
+ReentrantLock now calls AQS:
+
+```
+acquire(1)
+```
+
+Inside AQS:
+
+1️⃣ Try `tryAcquire()`
+
+Fails.
+
+2️⃣ Thread is **added to wait queue**
+
+Queue becomes:
+
+```
+HEAD → t2
+```
+
+3️⃣ Thread is **parked**
+
+Java internally calls:
+
+```
+LockSupport.park()
+```
+
+This means:
+
+```
+t2 is BLOCKED (not spinning)
+```
+
+Very important point:
+
+```
+CPU usage = 0
+```
+
+This is why AQS scales well.
+
+***
+
+# After 5 Seconds
+
+`t1` executes:
+
+```
+lock.unlock();
+```
+
+Inside unlock:
+
+```
+state--
+```
+
+Now:
+
+```
+state = 0
+```
+
+Lock fully released.
+
+AQS now wakes the **next thread in queue**.
+
+```
+LockSupport.unpark(t2)
+```
+
+`t2` wakes up and retries `tryAcquire()`.
+
+Now:
+
+```
+state = 0
+CAS(state,0,1) succeeds
+```
+
+`t2` acquires the lock.
+
+***
+
+# Final Execution
+
+`t2` runs:
+
+```
+System.out.println("Acquired");
+```
+
+Output:
+
+```
+Acquired
+```
+
+Exactly what you predicted. ✅
+
+***
+
+# Important Insight (Very Interview Relevant)
+
+`t2` does **NOT spin**.
+
+Instead:
+
+```
+CAS → fail
+enqueue
+park thread
+wait for unpark
+retry
+```
+
+This avoids **CPU waste**.
+
+Comparison:
+
+| Lock Type     | Behavior                        |
+| ------------- | ------------------------------- |
+| Spin Lock     | loops continuously              |
+| ReentrantLock | blocks thread using park/unpark |
+
+***
+
+# Internal Queue Visualization
+
+While `t1` holds lock:
+
+```
+state = 1
+
+Owner → t1
+
+Queue:
+HEAD → t2
+```
+
+When `t1` unlocks:
+
+```
+unpark(t2)
+```
+
+Queue:
+
+```
+HEAD → (removed)
+```
+
+***
+
+# Subtle Detail (Advanced)
+
+When `t2` wakes up, it **does not immediately own the lock**.
+
+Instead it **retries CAS again**.
+
+Why?
+
+Because another thread **might have acquired the lock first**.
+
+So flow is:
+
+```
+unpark
+retry CAS
+if success → acquire
+else → park again
+```
+
+This ensures correctness under **high contention**.
+
+***
+
+# Now One Conceptual Question (This is where people usually get stuck)
+
+Consider:
+
+```java
+ReentrantLock lock = new ReentrantLock();
+
+Thread t1 = new Thread(() -> {
+    lock.lock();
+    try {
+        Thread.sleep(5000);
+    } finally {
+        lock.unlock();
+    }
+});
+
+Thread t2 = new Thread(() -> {
+    lock.lock();
+    lock.unlock();
+});
+
+Thread t3 = new Thread(() -> {
+    lock.lock();
+    lock.unlock();
+});
+
+```
+
+Assume execution order:
+
+```
+t1 → t2 → t3
+```
+
+Queue becomes:
+
+```
+HEAD → t2 → t3
+```
+
+Now when `t1` unlocks, **which thread gets the lock first?**
+
+A) Always `t2`
+
+B) Could be `t2` or `t3`
+
+C) Always `t3`
+
+D) Random thread
+
+This question leads directly into **Fair vs Non-Fair locks**, which is the **next major concept in Java locking**. 🚀
+
+### Timeline
+
+```
+t1 holds lock
+t2 is parked in queue, sleeping
+
+t1 unlocks
+    ↓
+AQS signals t2 to wake up ──→ t2 needs time to:
+                               - get scheduled by OS
+                               - get CPU time
+                               - actually resume execution
+    ↓
+Meanwhile... t3 arrives fresh
+    ↓
+t3 is already running on CPU
+t3 tries CAS(state, 0, 1)  ← happens instantly
+    ↓
+t3 wins, acquires lock
+    ↓
+t2 finally wakes up, tries CAS, fails
+t2 goes back to sleep in queue
+```
+
+`t2` loses despite waiting longer.
+
+This is called **barging**. 
+
+###### So Correct Answer
+
+The correct answer to the question was:
+
+B) Could be `t2` or `t3`
+
+Because non-fair locks allow barging.
+
+
+
+##### Fair vs Non-Fair Summary
+
+| Property   | Non-Fair Lock  | Fair Lock   |
+| ---------- | -------------- | ----------- |
+| Default    | Yes            | No          |
+| Throughput | Higher         | Lower       |
+| FIFO order | Not guaranteed | Guaranteed  |
+| Barging    | Allowed        | Not allowed |
+
+#### One Very Interesting Fact
+
+Even **fair locks are not perfectly fair**.
+
+Because **OS thread scheduling is unpredictable**.
+
+But AQS tries its best to maintain FIFO.
+
+
+
+#### One More Question (This reveals deep understanding)
+
+Consider this code:
+
+```java
+ReentrantLock lock = new ReentrantLock(true); // fair lock
+Thread t1 = new Thread(() -> {
+    lock.lock();
+    try {
+        Thread.sleep(5000);
+    } finally {
+        lock.unlock();
+    }
+});
+Thread t2 = new Thread(() -> {
+    lock.lock();
+    lock.unlock();
+});
+Thread t3 = new Thread(() -> {
+    lock.lock();
+    lock.unlock();
+});
+```
+
+Queue:
+
+```
+HEAD → t2 → t3
+```
+
+Now imagine a completely new thread `t4` appears right when `t1` unlocks.
+
+Question:
+
+Can `t4` ever acquire the lock before `t2`?
+
+Yes or No?
+
+**Your answer is correct:&#x20;****`t4`****&#x20;cannot acquire the lock before&#x20;****`t2`****.**
+
+But let’s understand **why**, because the mechanism is interesting and tied directly to **AQS internals**.
+
+***
+
+## What Happens When `t1` Unlocks
+
+Queue:
+
+```
+HEAD → t2 → t3
+```
+
+`t1` releases the lock:
+
+```
+state = 0
+```
+
+AQS then:
+
+```
+unpark(t2)
+```
+
+So `t2` becomes runnable.
+
+***
+
+### Now `t4` Appears
+
+`t4` calls:
+
+```
+lock.lock()
+```
+
+Since this is a **fair lock**, `ReentrantLock` does something **extra** before trying CAS.
+
+Internally it checks:
+
+```java
+hasQueuedPredecessors()
+```
+
+***
+
+### What `hasQueuedPredecessors()` Does
+
+It checks if there are threads already waiting.
+
+Conceptually:
+
+```java
+head.next != currentThread
+```
+
+If **someone is already waiting**, the new thread **must not barge**.
+
+So for `t4`:
+
+```
+queue = HEAD → t2 → t3
+```
+
+Result:
+
+```java
+hasQueuedPredecessors() = true
+```
+
+Therefore:
+
+```
+t4 cannot acquire lock
+```
+
+Instead it joins the queue.
+
+Queue becomes:
+
+```
+HEAD → t2 → t3 → t4
+```
+
+***
+
+### Then `t2` Wakes Up
+
+`t2` was already unparked earlier.
+
+Now it retries acquisition:
+
+```
+CAS(state,0,1)
+```
+
+Success.
+
+`t2` becomes owner.
+
+***
+
+### Final Order
+
+```
+t1 → t2 → t3 → t4
+```
+
+FIFO preserved.
+
+***
+
+### Why This Is Important
+
+Fair locks enforce:
+
+```
+no barging
+```
+
+Non-fair locks allow:
+
+```
+new threads skipping queue
+```
+
+That small check:
+
+```
+hasQueuedPredecessors()
+```
+
+is the **entire fairness mechanism**.
+
+***
+
+# Real Internal Difference
+
+### Non-fair lock
+
+```java
+if (compareAndSetState(0, 1))
+    acquire
+```
+
+### Fair lock
+
+```java
+if (!hasQueuedPredecessors() &&
+    compareAndSetState(0, 1))
+    acquire
+```
+
+That single condition changes everything.
+
+***
+
+### Performance Tradeoff
+
+Fair locks are slower because **every acquisition must check the queue**.
+
+Non-fair locks skip that check.
+
+Which is why **default Java locks are non-fair**.
+
+***
+
+### Quick Mental Model
+
+Non-fair lock:
+
+```
+queue exists
+new thread arrives
+new thread may grab lock first
+```
+
+Fair lock:
+
+```
+queue exists
+new thread arrives
+must go to queue
+```
+
+***
+
+### One More Advanced Insight (Important for Interviews)
+
+Even with **fair locks**, this can happen:
+
+```
+t2 is unparked
+but OS delays t2
+```
+
+Meanwhile:
+
+```
+t3 runs first
+```
+
+But `t3`**still cannot acquire the lock**, because:
+
+```java
+hasQueuedPredecessors() = true
+```
+
+So fairness is preserved **at the lock level**, even if scheduling is unpredictable.
 
 ***
