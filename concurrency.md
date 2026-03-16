@@ -4680,3 +4680,1553 @@ hasQueuedPredecessors() = true
 So fairness is preserved **at the lock level**, even if scheduling is unpredictable.
 
 ***
+# Java Thread Lifecycle
+
+A thread in Java goes through **several well-defined states** during its lifetime.
+
+The states are defined in
+
+> java.lang.Thread.State.
+
+Java defines **6 states**.
+
+```
+NEW
+RUNNABLE
+BLOCKED
+WAITING
+TIMED_WAITING
+TERMINATED
+```
+
+Lifecycle overview:
+
+```
+        start()
+NEW  -------------> RUNNABLE
+                      |
+                      v
+                   RUNNING
+                      |
+       --------------------------------
+       |              |              |
+    BLOCKED        WAITING     TIMED_WAITING
+       |              |              |
+       ---------------|--------------
+                      v
+                   RUNNABLE
+                      |
+                      v
+                 TERMINATED
+```
+
+Important: **RUNNING is not a Java state** — it is part of `RUNNABLE`.
+
+## 1️⃣ NEW State
+
+A thread is in **NEW** state when it is **created but not started yet**.
+
+Example:
+
+```java
+Thread t = new Thread(() -> {
+    System.out.println("Hello");
+});
+```
+
+At this moment:
+
+```java
+Thread.State = NEW
+```
+
+The thread **exists as an object** but the OS scheduler doesn't know about it yet.
+
+## 2️⃣ RUNNABLE State
+
+When we call:
+
+```java
+t.start();
+```
+
+The thread moves to **RUNNABLE**.
+
+```
+NEW → RUNNABLE
+```
+
+Now the thread is:
+
+* registered with the **OS scheduler**
+* eligible to run on CPU
+
+Important nuance:
+
+In Java:
+
+> RUNNABLE = ready to run OR currently running
+
+Java does **not distinguish** between:
+
+```
+READY
+RUNNING
+```
+
+Both are represented as:
+
+> RUNNABLE
+
+## 3️⃣ BLOCKED State
+
+A thread enters **BLOCKED** when it is waiting to acquire a **monitor lock** (`synchronized`).
+
+Example:
+
+```java
+synchronized(lock) {
+    // critical section
+}
+```
+
+If another thread holds the lock:
+
+```
+Thread → BLOCKED
+```
+
+Example:
+
+```
+Thread A holds lock
+Thread B tries synchronized(lock)
+Thread B → BLOCKED
+```
+
+The thread will remain blocked **until the lock becomes available**.
+
+Important:
+
+> **BLOCKED** only happens with synchronized
+
+Not with `wait()`.
+
+## 4️⃣ WAITING State
+
+A thread enters **WAITING** when it waits **indefinitely for another thread to signal it**.
+
+Typical ways:
+
+```java
+Object.wait()
+Thread.join()
+LockSupport.park()
+```
+
+Example:
+
+```java
+synchronized(lock) {
+    lock.wait();
+}
+```
+
+Thread state:
+
+> WAITING
+
+The thread will remain here **until another thread wakes it up**.
+
+Example wake-up:
+
+```java
+lock.notify();
+lock.notifyAll();
+```
+
+## 5️⃣ TIMED\_WAITING State
+
+This is similar to WAITING but **with a timeout**.
+
+Examples:
+
+```
+Thread.sleep(1000)
+wait(1000)
+join(1000)
+parkNanos()
+```
+
+State:
+
+> TIMED\_WAITING
+
+After timeout:
+
+> TIMED\_WAITING → RUNNABLE
+
+## 6️⃣ TERMINATED State
+
+A thread enters **TERMINATED** when its `run()` method completes.
+
+Example:
+
+```java
+Thread t=newThread(() -> {
+System.out.println("Done");
+});
+```
+
+After execution finishes:
+
+> Thread.State = TERMINATED
+
+Important rule:
+
+```
+A terminated thread cannot be restarted.
+```
+
+This will throw exception:
+
+```java
+t.start();
+t.start(); // IllegalThreadStateException
+```
+
+### Full Example
+
+```java
+public class ThreadStateExample {
+    public static void main(String[] args) throws Exception {
+        Thread t = new Thread(() -> {
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {}
+        });
+        System.out.println(t.getState()); // NEW
+        t.start();
+        System.out.println(t.getState()); // RUNNABLE
+        Thread.sleep(100);
+        System.out.println(t.getState()); // TIMED_WAITING
+        t.join();
+        System.out.println(t.getState()); // TERMINATED
+    }
+}
+```
+
+
+
+### Important Distinction (Interview Critical)
+
+| State          | Why thread stops             |
+| -------------- | ---------------------------- |
+| BLOCKED        | waiting for **monitor lock** |
+| WAITING        | waiting for **signal**       |
+| TIMED\_WAITING | waiting **with timeout**     |
+
+Example mapping:
+
+```
+synchronized → BLOCKED
+wait() → WAITING
+sleep() → TIMED_WAITING
+```
+
+### NEW
+
+Think of thread lifecycle like **airport travel**.
+
+```
+NEW
+(ticket booked)
+
+RUNNABLE
+(waiting for boarding)
+
+RUNNING
+(on plane)
+
+BLOCKED
+(waiting for runway)
+
+WAITING
+(waiting for passenger)
+
+TIMED_WAITING
+(waiting for fixed time)
+
+TERMINATED
+(reached destination)
+```
+
+### One Important Detail (Almost Everyone Misses)
+
+Calling **`run()`****&#x20;does NOT start a new thread**.
+
+Wrong:
+
+```java
+t.run();
+```
+
+This executes **in the current thread**.
+
+Correct:
+
+```java
+t.start();
+```
+
+`start()`:
+
+```
+creates new OS thread
+calls run()
+```
+
+***
+
+## 1️⃣ `Thread.sleep()`
+
+Method from
+
+> java.lang.Thread
+
+Purpose:
+
+```
+Pause the current thread for a fixed time.
+```
+
+Example:
+
+```java
+Thread.sleep(2000);
+```
+
+Meaning:
+
+```
+Current thread pauses for 2 seconds
+```
+
+### State Transition
+
+```
+RUNNABLE → TIMED_WAITING → RUNNABLE
+```
+
+### Important Properties
+
+1️⃣ **Does NOT release locks**
+
+Example:
+
+```java
+synchronized(lock) {
+    Thread.sleep(5000);
+}
+```
+
+Even during sleep:
+
+```
+lock is still held
+```
+
+Other threads **cannot enter the synchronized block**.
+
+2️⃣ Sleep is **static**
+
+```java
+Thread.sleep(...)
+```
+
+Not:
+
+```java
+t.sleep(...)
+```
+
+Because it always affects **current thread**.
+
+***
+
+## 2️⃣ `Object.wait()`
+
+Method from
+
+> java.lang.Object
+
+Purpose:
+
+```
+Wait until another thread signals.
+```
+
+Example:
+
+```java
+synchronized(lock) {
+    lock.wait();
+}
+```
+
+### State Transition
+
+```
+RUNNABLE → WAITING → RUNNABLE
+```
+
+If timeout used:
+
+```
+RUNNABLE → TIMED_WAITING → RUNNABLE
+```
+
+### Important Rule
+
+`wait()`**must be called inside synchronized**.
+
+Example:
+
+```java
+synchronized(lock) {
+    lock.wait();
+}
+```
+
+Otherwise:
+
+```
+IllegalMonitorStateException
+```
+
+### Critical Behavior
+
+When a thread calls `wait()`:
+
+```
+1. Releases the lock
+2. Enters WAITING state
+3. Sleeps until notified
+```
+
+This is **very different from sleep()**.
+
+***
+
+### 3️⃣ `notify()` and `notifyAll()`
+
+Used with `wait()`.
+
+Example:
+
+```java
+synchronized(lock) {
+    lock.notify();
+}
+```
+
+or
+
+```java
+synchronized(lock) {
+    lock.notifyAll();
+}
+```
+
+### Behavior
+
+```
+notify()     → wakes one waiting thread
+notifyAll()  → wakes all waiting threads
+```
+
+Important:
+
+Woken threads **do not run immediately**.
+
+They move to:
+
+```
+WAITING → BLOCKED → RUNNABLE
+```
+
+Because they must **re-acquire the monitor lock**.
+
+***
+
+## 4️⃣ `Thread.join()`
+
+Also from
+
+> java.lang.Thread.
+
+Purpose:
+
+```
+Wait for another thread to finish.
+```
+
+Example:
+
+```java
+Thread worker = new Thread(() -> {
+    doWork();
+});
+
+worker.start();
+worker.join();
+```
+
+Meaning:
+
+```
+Current thread waits until worker finishes.
+```
+
+### State Transition
+
+```
+RUNNABLE → WAITING → RUNNABLE
+```
+
+If timeout used:
+
+```java
+worker.join(1000);
+```
+
+State:
+
+```
+RUNNABLE → TIMED_WAITING → RUNNABLE
+```
+
+***
+
+## Example of `join()`
+
+```java
+public class JoinExample {
+    public static void main(String[] args) throws Exception {
+        Thread worker = new Thread(() -> {
+            try {
+                Thread.sleep(2000);
+                System.out.println("Worker done");
+            } catch (InterruptedException e) {}
+        });
+
+        worker.start();
+
+        System.out.println("Waiting for worker...");
+
+        worker.join();
+
+        System.out.println("Main resumes");
+    }
+}
+
+```
+
+Output:
+
+```
+Waiting for worker...
+Worker done
+Main resumes
+```
+
+***
+
+### `sleep()` vs `wait()` (Very Important)
+
+| Feature                | sleep()        | wait()              |
+| ---------------------- | -------------- | ------------------- |
+| Class                  | Thread         | Object              |
+| Lock released?         | ❌ No           | ✅ Yes               |
+| Requires synchronized? | ❌ No           | ✅ Yes               |
+| Purpose                | pause thread   | thread coordination |
+| State                  | TIMED\_WAITING | WAITING             |
+
+Example difference:
+
+#### sleep()
+
+```
+Thread holds lock but pauses
+```
+
+#### wait()
+
+```
+Thread releases lock and waits
+```
+
+***
+
+### `wait()` vs `join()`
+
+| Feature       | `wait()`            | `join()`          |
+| ------------- | ------------------- | ----------------- |
+| Used for      | thread coordination | thread completion |
+| Requires lock | yes                 | no                |
+| Object        | any object          | thread object     |
+
+Example:
+
+```
+Producer / Consumer → wait()
+Thread completion → join()
+```
+
+***
+
+### Real Bug Example (Classic Interview Problem)
+
+Wrong code:
+
+```java
+synchronized(lock) {
+    while(queue.isEmpty()) {
+        Thread.sleep(100);
+    }
+}
+
+```
+
+Problem:
+
+```
+Thread holds lock while sleeping
+Producer cannot acquire lock
+Deadlock-like stall
+```
+
+Correct version:
+
+```java
+synchronized(lock) {
+    while(queue.isEmpty()) {
+        lock.wait();
+    }
+}
+```
+
+Here:
+
+```
+consumer releases lock
+producer can insert item
+producer calls notify()
+```
+
+This is the **correct coordination pattern**.
+
+***
+
+## Real Debugging Tip (Senior Engineer Trick)
+
+You can inspect thread states using:
+
+```
+jstack <pid>
+```
+
+Example output:
+
+```
+Thread-1   WAITING (on object monitor)
+Thread-2   BLOCKED (on object monitor)
+Thread-3   TIMED_WAITING (sleeping)
+```
+
+You instantly know:
+
+```
+who holds locks
+who is waiting
+who is sleeping
+```
+
+This is **extremely useful when debugging deadlocks**.
+
+***
+
+### Important Rule Most Developers Miss
+
+Always use **`wait()`****&#x20;inside a loop**.
+
+Wrong:
+
+```java
+if(queue.isEmpty()) {
+    wait();
+}
+```
+
+Correct:
+
+```java
+while(queue.isEmpty()) {
+    wait();
+}
+```
+
+Reason:
+
+```
+Spurious wakeups
+```
+
+The JVM **can wake a thread even without notify()**.
+
+***
+
+# Intrinsic Locks and `synchronized`
+
+Every object in Java has an **intrinsic lock** (also called a **monitor lock**).
+
+The keyword
+
+> synchronized
+
+is used to **acquire and release that lock automatically**.
+
+This mechanism is built directly into the JVM.
+
+***
+
+## What Is an Intrinsic Lock?
+
+Every object implicitly contains:
+
+```
+Object
+ ├── Data
+ └── Monitor (Intrinsic Lock)
+```
+
+That monitor ensures **mutual exclusion**.
+
+Meaning:
+
+```
+Only ONE thread can execute synchronized code
+protected by the same lock at a time.
+```
+
+***
+
+## Example Without Synchronization
+
+```java
+class Counter {
+    int count = 0;
+
+    void increment() {
+        count++;
+    }
+}
+
+```
+
+Multiple threads running:
+
+```java
+count++
+```
+
+can cause **race conditions**.
+
+Because this operation actually becomes:
+
+```
+load count
+add 1
+store count
+```
+
+Two threads may overwrite each other.
+
+***
+
+### Fix Using `synchronized`
+
+```java
+class Counter {
+    int count = 0;
+
+    synchronized void increment() {
+        count++;
+    }
+}
+```
+
+Now:
+
+```
+only one thread enters increment() at a time
+```
+
+This ensures **thread safety**.
+
+***
+
+### What Happens Internally
+
+When a thread enters a synchronized block:
+
+```
+monitorenter
+```
+
+When it exits:
+
+```
+monitorexit
+```
+
+These are **JVM bytecode instructions**.
+
+The lock is:
+
+```
+acquired → critical section → released
+```
+
+If another thread tries to enter:
+
+```
+Thread → BLOCKED
+```
+
+***
+
+## Two Ways to Use `synchronized`
+
+### 1️⃣ Synchronized Method
+
+```java
+synchronized void increment() {
+    count++;
+}
+```
+
+Equivalent to:
+
+```java
+void increment() {
+    synchronized(this) {
+        count++;
+    }
+}
+```
+
+The lock used is:
+
+```
+this (current object)
+```
+
+***
+
+### 2️⃣ Synchronized Block
+
+More flexible:
+
+```java
+synchronized(lockObject) {
+    // critical section
+}
+```
+
+Example:
+
+```java
+class Counter {
+
+    private final Object lock = new Object();
+    int count = 0;
+
+    void increment() {
+        synchronized(lock) {
+            count++;
+        }
+    }
+}
+
+```
+
+Now the monitor belongs to:
+
+```
+lock object
+```
+
+not the whole class instance.
+
+***
+
+### Why Blocks Are Often Better
+
+Blocks allow **fine-grained locking**.
+
+Example:
+
+```java
+synchronized(lockA) {
+    // modify A
+}
+
+synchronized(lockB) {
+    // modify B
+}
+
+```
+
+Now operations on A and B **can run concurrently**.
+
+This improves **scalability**.
+
+***
+
+## Object Lock vs Class Lock
+
+This is an important distinction.
+
+#### Object Lock
+
+```java
+synchronized void method()
+```
+
+or
+
+```java
+synchronized(this)
+```
+
+Lock used:
+
+```
+this instance
+```
+
+Each object has its **own lock**.
+
+Example:
+
+```
+Counter c1
+Counter c2
+```
+
+Two threads can execute simultaneously.
+
+***
+
+### Class Lock
+
+Used with static methods.
+
+```java
+static synchronized void method() {
+}
+```
+
+Equivalent to:
+
+```java
+synchronized(Counter.class) {
+}
+```
+
+Lock used:
+
+```
+Class object
+```
+
+This means:
+
+```
+one thread per class
+```
+
+even across instances.
+
+***
+
+### Example Demonstrating Both
+
+```java
+class Example {
+    synchronized void objectLock() {
+        System.out.println("Object lock");
+    }
+
+    static synchronized void classLock() {
+        System.out.println("Class lock");
+    }
+}
+
+```
+
+Locks used:
+
+```
+objectLock() → instance monitor
+classLock() → Example.class monitor
+```
+
+***
+
+# How Threads Behave
+
+Example:
+
+```
+Thread A enters synchronized block
+Thread B tries same block
+```
+
+Result:
+
+```
+Thread A → RUNNABLE
+Thread B → BLOCKED
+
+```
+
+Thread B waits until:
+
+```
+Thread A exits
+```
+
+Then:
+
+```
+Thread B → RUNNABLE
+```
+
+***
+
+### Important Property: Automatic Unlock
+
+Locks are **automatically released**.
+
+Example:
+
+```java
+synchronized(lock) {
+    doWork();
+}
+```
+
+Even if exception occurs:
+
+```
+lock is released
+```
+
+This prevents many bugs.
+
+***
+
+### Critical Property: Visibility
+
+`synchronized` also provides **memory visibility guarantees**.
+
+Meaning:
+
+```
+changes by Thread A
+become visible to Thread B
+after lock release/acquire
+```
+
+This relates to the **Java Memory Model**, which we'll cover later.
+
+***
+
+## Common Mistake
+
+Locking on the wrong object.
+
+Bad:
+
+```java
+synchronized(new Object()) {
+    count++;
+}
+```
+
+This creates **new lock each time**.
+
+So:
+
+```
+no synchronization actually occurs
+```
+
+Correct:
+
+```java
+private final Object lock = new Object();
+```
+
+***
+
+### Classic Example
+
+Thread-safe counter:
+
+```java
+class Counter {
+
+    private int count = 0;
+
+    public synchronized void increment() {
+        count++;
+    }
+
+    public synchronized int get() {
+        return count;
+    }
+}
+
+```
+
+Now:
+
+```
+increment() and get() share same lock
+```
+
+ensuring consistency.
+
+***
+
+# Summary
+
+Intrinsic locks provide:
+
+```
+Mutual exclusion
+Visibility guarantees
+Automatic lock management
+```
+
+Key concepts:
+
+```
+Every object has a monitor
+synchronized acquires monitor
+one thread at a time
+other threads BLOCKED
+```
+
+***
+
+## 1️⃣ Reentrancy in `synchronized`
+
+Intrinsic locks used by
+
+> **synchronized**
+
+are **reentrant**.
+
+Meaning:
+
+```
+A thread that already holds a monitor lock
+can acquire it again without blocking.
+```
+
+Example:
+
+```java
+class Example {
+    synchronized void methodA() {
+        System.out.println("methodA start");
+        methodB();
+        System.out.println("methodA end");
+    }
+
+    synchronized void methodB() {
+        System.out.println("methodB");
+    }
+}
+
+```
+
+Execution:
+
+```
+Thread T1 enters methodA
+T1 acquires monitor lock
+
+methodA calls methodB
+
+methodB also requires the same monitor
+```
+
+Since **T1 already owns the lock**, it is allowed to enter.
+
+Execution continues normally.
+
+Output:
+
+```
+methodA start
+methodB
+methodA end
+```
+
+So the lock is **not acquired once per method**, but **per thread**.
+
+***
+
+## 2️⃣ Intrinsic Monitor Hold Count
+
+Every monitor internally tracks two things:
+
+```
+Monitor
+ ├ Owner Thread
+ └ Hold Count
+```
+
+Conceptually:
+
+```
+Owner = thread currently holding the lock
+HoldCount = number of times it acquired the lock
+```
+
+Example execution:
+
+```
+Thread T1 enters methodA
+HoldCount = 1
+```
+
+Inside `methodA`:
+
+```
+methodB() is called
+```
+
+Now:
+
+```
+Thread T1 acquires same lock again
+HoldCount = 2
+```
+
+When `methodB` exits:
+
+```
+HoldCount = 1
+```
+
+When `methodA` exits:
+
+```
+HoldCount = 0
+Lock released
+```
+
+So the lock is only released when:
+
+```
+holdCount == 0
+```
+
+***
+
+## 3️⃣ Why Reentrancy Exists
+
+Without reentrancy, **nested synchronized calls would deadlock**.
+
+Example:
+
+```java
+class BankAccount {
+    synchronized void deposit() {
+        updateBalance();
+    }
+
+    synchronized void updateBalance() {
+        // update logic
+    }
+}
+
+```
+
+Execution:
+
+```
+Thread T1 calls deposit()
+deposit() acquires lock
+```
+
+Then:
+
+```
+deposit() calls updateBalance()
+```
+
+Now `updateBalance()` tries to acquire the same lock.
+
+If locks were **not reentrant**:
+
+```
+updateBalance() would BLOCK
+```
+
+But the lock is owned by:
+
+```
+Thread T1 itself
+```
+
+So T1 would be waiting for **itself**.
+
+That would create:
+
+```
+self-deadlock
+```
+
+Because Java locks are **reentrant**, the JVM detects:
+
+```java
+currentThread == lockOwner
+```
+
+and simply:
+
+```
+holdCount++
+```
+
+***
+
+### 4️⃣ Self-Deadlock (What Reentrancy Prevents)
+
+Self-deadlock means:
+
+```
+A thread waits for a lock it already holds.
+```
+
+Example if locks were not reentrant:
+
+```
+Thread T1
+  acquires Lock A
+  tries to acquire Lock A again
+  waits forever
+```
+
+This would freeze the thread.
+
+Reentrancy prevents this by allowing:
+
+```
+same thread
+same lock
+multiple acquisitions
+```
+
+Important distinction:
+
+Reentrancy **does NOT prevent deadlocks between threads**.
+
+Example still deadlocks:
+
+```
+Thread1 → lockA → lockB
+Thread2 → lockB → lockA
+```
+
+This is **classic circular deadlock**.
+
+Reentrancy only prevents **self-deadlock**.
+
+***
+
+### 5️⃣ Recursive Lock Terminology
+
+In operating system literature, you may see two terms:
+
+```
+Reentrant lock
+Recursive lock
+```
+
+They mean **the same thing**.
+
+Example:
+
+| Term            | Used By               |
+| --------------- | --------------------- |
+| Reentrant Lock  | Java                  |
+| Recursive Mutex | POSIX / OS literature |
+
+Example in POSIX:
+
+```
+PTHREAD_MUTEX_RECURSIVE
+```
+
+Example in Java:
+
+```
+ReentrantLock
+```
+
+Both allow:
+
+```
+same thread
+multiple lock acquisitions
+```
+
+***
+
+### 6️⃣ Visual Example of Reentrancy
+
+Example execution timeline:
+
+```
+Thread T1 calls methodA()
+```
+
+```
+Acquire monitor
+HoldCount = 1
+```
+
+```
+methodA calls methodB()
+```
+
+```
+Acquire monitor again
+HoldCount = 2
+```
+
+```
+methodB exits
+HoldCount = 1
+```
+
+```
+methodA exits
+HoldCount = 0
+Lock released
+```
+
+Now another thread can acquire it.
+
+***
+
+### 7️⃣ Example Showing Hold Count Behavior
+
+```java
+class ReentrantExample {
+
+    synchronized void outer() {
+        System.out.println("Outer start");
+        inner();
+        System.out.println("Outer end");
+    }
+
+    synchronized void inner() {
+        System.out.println("Inner method");
+    }
+}
+
+```
+
+Execution:
+
+```
+T1 enters outer()
+lock acquired
+holdCount = 1
+
+inner() called
+lock acquired again
+holdCount = 2
+
+inner() exits
+holdCount = 1
+
+outer() exits
+holdCount = 0
+```
+
+Lock finally released.
+
+***
+
+### 8️⃣ Important Insight
+
+Because intrinsic locks are reentrant:
+
+```
+nested synchronized calls are safe
+```
+
+This allows developers to structure code naturally:
+
+```
+public API methods
+→ internal helper methods
+→ all synchronized
+```
+
+Without worrying about **self-deadlocks**.
+
+***
+
+### Summary
+
+Intrinsic lock reentrancy works like this:
+
+```
+Each monitor tracks:
+
+owner thread
+hold count
+```
+
+Rules:
+
+```
+same thread → allowed to reenter
+holdCount increases
+unlock only when holdCount == 0
+```
+
+Reentrancy prevents:
+
+```
+self-deadlock
+```
+
+But not:
+
+```
+multi-thread deadlock
+```
+
+***
