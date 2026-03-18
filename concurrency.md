@@ -7738,3 +7738,1711 @@ Think of a bank:
 | 4–8 threads                    | good                         | similar / slightly better | \~1–2×      |
 | 32–64 threads                  | degrades badly               | still excellent           | 10–50×      |
 | 128+ threads (over-subscribed) | very poor                    | good                      | 20–100×+    |
+
+***
+# Striped Locks / Contention Striping
+
+**Striped locks** (also called **lock striping**) is a concurrency pattern used to reduce **lock contention** in multi-threaded applications when many threads need to access and modify a shared data structure (like a map, cache, counter array, etc.).
+
+The core idea is very simple:
+
+Instead of protecting the **entire** data structure with **one single lock** (which creates a bottleneck → high contention),you divide the data into several **stripes** (shards / segments / buckets) and give **each stripe its own lock**.
+
+### The three main approaches compared
+
+| Approach               | Number of locks                | Contention level              | Memory usage       | Scalability with many threads | Real-world example                             |
+| ---------------------- | ------------------------------ | ----------------------------- | ------------------ | ----------------------------- | ---------------------------------------------- |
+| Coarse-grained locking | 1                              | Very high (global bottleneck) | Very low           | Poor                          | `Collections.synchronizedMap()`                |
+| Lock striping          | Fixed small number (e.g. 8–64) | Medium–low                    | Low–moderate       | Good                          | `ConcurrentHashMap` (classic), Guava `Striped` |
+| Fine-grained locking   | 1 lock per item / key          | Very low (almost none)        | High (can be huge) | Excellent                     | One `ReentrantLock` per cache entry            |
+
+Lock striping sits in the sweet spot for many real systems: good enough reduction in contention without exploding memory usage.
+
+### How lock striping actually works
+
+1. You create a fixed number of locks — let's say 16.
+2. For any key/object you want to protect, you compute `hash(key) % number_of_stripes` → this gives you a stripe index (0…15).
+3. You acquire **only the lock that belongs to that stripe** before touching the data belonging to that key.
+4. Different keys that hash to **different stripes** can be accessed/modified truly concurrently.
+5. Keys that hash to the **same stripe** still have to wait (serialize), but only within that small group.
+
+### Classic real-world example: ConcurrentHashMap (Java ≤ 7 style)
+
+```java
+ConcurrentHashMap had (by default) 16 stripes / segments
+
+key "user:123"   → hash → segment 3   → lock[3]
+key "user:456"   → hash → segment 11  → lock[11]
+key "user:789"   → hash → segment 3   → lock[3]  ← must wait if someone holds it
+
+→ Threads working on different segments run in parallel
+→ Only ~1/16 of operations typically collide (assuming good hash distribution)
+```
+
+In Java 8+ `ConcurrentHashMap` became even more sophisticated (moved to node-level locking + CAS), but the original segment/striping design is the textbook example of striped locks.
+
+
+
+### When does striped locking help most?
+
+* High read/write contention on a shared map/cache/counter/array
+* You cannot afford one global lock (throughput collapses)
+* Creating one lock per key would use too much memory
+* Hash codes are reasonably well distributed
+
+### Summary – one-liner versions
+
+* **Striped locks** = many small locks instead of one big lock
+* **Lock striping** = the technique of spreading keys across those locks using hash % N
+* **Goal** = dramatically reduce **contention** while keeping memory usage reasonable
+
+It's one of the most widely used practical concurrency patterns in high-performance servers, caches, databases, and concurrent collections.
+
+
+
+# CONCURRENT HASHMAP DEEPDIVE
+
+***
+
+## 🧠 0. Big Picture First
+
+`ConcurrentHashMap` (Java 8+) is designed around:
+
+> ✅ Lock-free reads
+
+> ✅ Fine-grained locking (not global)
+
+> ✅ CAS where possible
+
+> ✅ Cooperative resizing (no stop-the-world)
+
+***
+
+# 🧩 1. Core Structure
+
+```java
+Node<K,V>[] table;
+```
+
+Each bucket:
+
+```java
+static class Node<K,V> {
+    final int hash;
+    final K key;
+    volatile V value;
+    volatile Node<K,V> next;
+}
+```
+
+***
+
+### 🔑 Important design choices
+
+* `value` → **volatile** → visibility
+* `next` → **volatile** → safe traversal
+* Table itself → lazily initialized
+
+***
+
+## ⚡ 2. Initialization (Lazy)
+
+Unlike `HashMap`, table is NOT created immediately.
+
+```java
+if (table == null)
+    initialize via CAS
+```
+
+👉 Multiple threads may try → only one wins
+
+***
+
+### 💨 3. GET Operation (Completely Lock-Free)
+
+```java
+V get(Object key)
+```
+
+### Steps:
+
+1. Compute hash
+2. Find bucket
+3. Traverse:
+   * linked list OR
+   * red-black tree
+
+👉 No locks anywhere
+
+***
+
+#### ❗ Why safe?
+
+Because of:
+
+* `volatile`
+* Happens-before guarantees
+
+***
+
+#### 🔥 Key Insight:
+
+> Reads NEVER block — this is huge for scalability
+
+***
+
+## ✍️ 4. PUT Operation (Core Logic)
+
+This is where everything interesting happens.
+
+***
+
+## Step 1: Find bucket
+
+```java
+index = (n - 1) & hash;
+```
+
+***
+
+## Step 2: Bucket empty?
+
+```java
+if (tab[i] == null)
+    CAS insert new Node
+```
+
+👉 Lock-free fast path
+
+***
+
+## Step 3: Bucket NOT empty
+
+Now things branch:
+
+***
+
+### Case A: Normal node
+
+```java
+synchronized (firstNode) {
+    // traverse and insert/update
+}
+```
+
+👉 Lock only this bucket
+
+***
+
+### Case B: Tree node
+
+👉 Use red-black tree logic
+
+***
+
+### Case C: ForwardingNode (IMPORTANT)
+
+This means:
+
+> ❗ “Resize is in progress”
+
+👉 Thread helps with resizing
+
+***
+
+### 🌳 5. Treeification (Collision Handling)
+
+If too many nodes in a bucket:
+
+```
+> 8 nodes → convert to tree
+```
+
+***
+
+## Why?
+
+Linked list:
+
+```
+O(n)
+```
+
+Tree:
+
+```
+O(log n)
+```
+
+***
+
+## But condition:
+
+Only if table size ≥ 64
+
+Else → resize instead
+
+***
+
+## 🧠 6. Now the HARD Part — RESIZING (Deep Dive)
+
+
+
+#### ❌ Problem with naive resizing
+
+In `HashMap`:
+
+* One thread resizes
+* Others wait
+* Big pause
+
+👉 Not acceptable in concurrent system
+
+***
+
+## ✅ ConcurrentHashMap Solution
+
+> ❗ Multiple threads HELP in resizing
+
+***
+
+# 🧩 Key Concepts
+
+### 1. `nextTable`
+
+New resized array
+
+***
+
+### 2. `ForwardingNode`
+
+Special marker:
+
+```java
+hash = MOVED (-1)
+```
+
+Meaning:
+
+> “This bucket is already moved to new table”
+
+***
+
+### 3. `transferIndex`
+
+Tracks:
+
+```
+Which buckets are left to move
+```
+
+***
+
+## 🔄 Step-by-Step Resize Flow
+
+***
+
+### 🟢 Step 1: Resize Trigger
+
+When:
+
+```java
+size > threshold
+```
+
+Thread decides to resize.
+
+***
+
+## 🟡 Step 2: Create new table
+
+```java
+old capacity = n
+new capacity = 2n
+```
+
+***
+
+## 🔴 Step 3: Start transfer
+
+Instead of:
+
+```
+move ALL buckets (blocking)
+```
+
+We do:
+
+```
+move buckets in chunks
+```
+
+***
+
+## 🧠 Step 4: Work splitting
+
+Threads use `transferIndex`:
+
+```
+Thread A → buckets 100–120
+Thread B → buckets 80–100
+Thread C → buckets 60–80
+```
+
+***
+
+## ⚙️ Step 5: Moving a bucket
+
+For each bucket:
+
+### Case 1: Empty
+
+```
+just mark as moved
+```
+
+***
+
+### Case 2: Linked list
+
+Split into:
+
+```
+Low list (same index)
+High list (index + oldCapacity)
+```
+
+***
+
+### Why?
+
+Because:
+
+```
+newIndex = oldIndex OR oldIndex + oldCapacity
+```
+
+👉 This avoids recomputing hash
+
+***
+
+### Example:
+
+```
+old capacity = 16
+new capacity = 32
+
+index = hash & 15
+
+new index:
+→ same index OR index + 16
+```
+
+***
+
+## 🟣 Step 6: Replace with ForwardingNode
+
+After moving:
+
+```
+old bucket → ForwardingNode
+```
+
+***
+
+## 🔥 Step 7: Other threads see this
+
+If a thread tries:
+
+```
+put/get
+```
+
+and sees:
+
+```
+ForwardingNode
+```
+
+👉 It does:
+
+> “Oh resize is happening → help transfer”
+
+***
+
+# 🧠 This is the MAGIC
+
+> ❗ Resizing is **cooperative**, not blocking
+
+***
+
+# ⚡ Step 8: Finishing resize
+
+When all buckets moved:
+
+```
+table = nextTable
+nextTable = null
+```
+
+***
+
+# 🎯 Final Result
+
+* No global lock
+* No pause
+* Work distributed across threads
+
+***
+
+# 🧠 7. Size Calculation (Another tricky part)
+
+You might think:
+
+```java
+size()
+```
+
+is easy — but it’s not.
+
+***
+
+## ❌ Problem
+
+Concurrent updates → no exact count
+
+***
+
+## ✅ Solution
+
+Uses:
+
+```
+baseCount + counterCells[]
+```
+
+👉 SAME IDEA as LongAdder
+
+***
+
+# 🔥 8. Summary of Techniques Used
+
+| Feature      | Technique                 |
+| ------------ | ------------------------- |
+| Reads        | Lock-free                 |
+| Writes       | Bucket-level lock         |
+| Empty insert | CAS                       |
+| Collisions   | Tree                      |
+| Resize       | Cooperative               |
+| Size         | Striping (LongAdder-like) |
+
+***
+
+# 🧠 Final Mental Model (SUPER IMPORTANT)
+
+Think of `ConcurrentHashMap` like:
+
+```
+Map
+ ├── Buckets (independent zones)
+ │     ├── Lock only when needed
+ │
+ ├── Reads → free
+ ├── Writes → localized
+ ├── Resize → teamwork
+ │
+ └── Counters → distributed
+```
+
+***
+
+### ❓ “How do multiple threads resize safely?”
+
+Answer:
+
+👉 They don’t coordinate centrally
+
+👉 They just:
+
+* grab work (via transferIndex)
+* process chunk
+* mark progress (ForwardingNode)
+
+***
+
+### ❓ “What if two threads move same bucket?”
+
+👉 Prevented via CAS + indexing logic
+
+***
+
+### ❓ “How do readers know where data is?”
+
+👉 If they see ForwardingNode → go to new table
+
+***
+
+# ❓ 1. Resizing Flow + ForwardingNode Timing
+
+> “Old map is still active until all buckets are moved”
+
+✅ **100% correct**
+
+***
+
+## 🧠 Real Mental Model
+
+During resize, there are **two tables alive at the same time**:
+
+```
+old table (still readable/writable)
+new table (being populated)
+```
+
+👉 This is key:
+
+> ❗ System NEVER pauses to fully switch
+
+***
+
+## 🔄 When does resizing start?
+
+When:
+
+```java
+size > threshold
+```
+
+A thread:
+
+* allocates `nextTable` (2x size)
+* starts transfer
+
+***
+
+## ⚙️ What happens per bucket (IMPORTANT)
+
+Let’s say thread picks bucket `i`.
+
+***
+
+### Step 1: Check bucket
+
+```
+tab[i]
+```
+
+***
+
+### Step 2: Try to “claim” it
+
+Thread uses CAS-like logic to ensure:
+
+> “Only ONE thread moves this bucket”
+
+***
+
+### Step 3: Move entries to new table
+
+Split into:
+
+```
+low list  → index i
+high list → index i + oldCapacity
+```
+
+***
+
+### Step 4: Replace OLD bucket
+
+👉 **THIS is where ForwardingNode is inserted**
+
+```
+tab[i] = ForwardingNode(nextTable)
+```
+
+***
+
+## 🔥 So answer to your key question:
+
+> “Do we add ForwardingNode at the end?”
+
+❌ No
+
+👉 We add it **IMMEDIATELY after moving that bucket**
+
+***
+
+## 🎯 Why?
+
+Because:
+
+> ❗ It acts as a SIGNAL:
+
+> “This bucket is already moved — don’t touch old data”
+
+***
+
+## 🧠 What happens after that?
+
+Any thread accessing this bucket:
+
+```java
+if (node.hash == MOVED)
+    helpTransfer()
+```
+
+👉 It either:
+
+* helps resizing OR
+* directly uses new table
+
+***
+
+## 🔥 Important Insight
+
+> ForwardingNode = **both marker + redirect mechanism**
+
+***
+
+# ❓ 2. Do ForwardingNodes store new table location?
+
+👉 YES — and this is critical
+
+***
+
+## Structure:
+
+```java
+static final class ForwardingNode<K,V> extends Node<K,V> {
+    final Node<K,V>[] nextTable;
+}
+```
+
+***
+
+## 🧠 Meaning:
+
+ForwardingNode contains:
+
+```
+reference → new table
+```
+
+***
+
+## 🎯 Why needed?
+
+When a thread does:
+
+```java
+get(key)
+```
+
+and lands on moved bucket:
+
+```
+ForwardingNode
+```
+
+👉 It does:
+
+```
+“Go to nextTable and retry”
+```
+
+***
+
+## 🔥 So flow becomes:
+
+```
+old table → ForwardingNode → new table
+```
+
+***
+
+## 🧠 This ensures:
+
+* Readers don’t break during resize
+* Writers don’t corrupt state
+
+***
+
+# ❓ 3. How counters are distributed?
+
+***
+
+## Short Answer:
+
+> ❗ `ConcurrentHashMap` does NOT directly use `LongAdder`
+
+> BUT
+
+> 👉 It uses the **same internal idea (Striped counters)**
+
+***
+
+## 🧩 Internal Structure
+
+```java
+volatile long baseCount;
+volatile CounterCell[] counterCells;
+```
+
+This is basically:
+
+```java
+LongAdder (reimplemented internally)
+```
+
+***
+
+## 🧠 Why not use LongAdder directly?
+
+Because:
+
+* CHM needs tighter control
+* Avoid extra abstraction
+* Optimize integration
+
+***
+
+## ⚙️ How updates happen
+
+### Case 1: Low contention
+
+```
+CAS(baseCount, baseCount + 1)
+```
+
+***
+
+### Case 2: Contention detected
+
+👉 Use:
+
+```java
+counterCells[i]
+```
+
+***
+
+## 🧵 Same as LongAdder:
+
+```java
+Thread A → cell[1]
+Thread B → cell[3]
+Thread C → cell[0]
+```
+
+***
+
+## 🔥 Increment flow
+
+When you do:
+
+```java
+map.put(key, value);
+```
+
+Internally:
+
+```
+addCount(1)
+```
+
+***
+
+## Inside `addCount`
+
+```
+try baseCount CAS
+if fail → use counterCells
+if cells not exist → initialize
+if still contention → expand cells
+```
+
+***
+
+## 🎯 Final size calculation
+
+```java
+size = baseCount + sum(counterCells)
+```
+
+***
+
+## ⚠️ Important
+
+Same trade-off as LongAdder:
+
+> ❗ size() is NOT strictly consistent under concurrency
+
+***
+
+## 🧠 Putting It All Together
+
+***
+
+### 🔄 Resize Flow (Final Picture)
+
+```
+Thread A triggers resize
+    ↓
+Creates nextTable
+    ↓
+Threads start moving buckets
+    ↓
+Each moved bucket:
+    → replaced with ForwardingNode
+    ↓
+Other threads:
+    → see ForwardingNode
+    → jump to new table OR help transfer
+    ↓
+All buckets moved
+    ↓
+Switch table reference
+
+```
+
+***
+
+## 🔢 Counter Flow
+
+```
+Low contention → baseCount
+High contention → counterCells[]
+Final size → sum of all
+
+```
+
+***
+
+# 🔥 Key Insights
+
+### 1.
+
+> ForwardingNode is NOT a final step
+
+> 👉 It is **per-bucket migration marker**
+
+***
+
+### 2.
+
+> Resize is NOT one big operation
+
+> 👉 It is **incremental + parallel**
+
+***
+
+### 3.
+
+> CHM doesn’t “pause”
+
+> 👉 It **evolves while running**
+
+***
+
+### 4.
+
+> Counters follow LongAdder philosophy
+
+> 👉 Distributed to avoid contention
+
+***
+
+> “How do threads coordinate *without explicit coordination*?”
+
+Let’s break both questions very precisely.
+
+***
+
+# ❓ 1. “How do other threads know they have to move buckets?”
+
+This is the **core confusion point** — so let’s fix it cleanly.
+
+***
+
+## 🧠 Key Idea
+
+> ❗ There is **NO per-bucket signal saying “move this”**
+
+Instead, there is a **GLOBAL signal**:
+
+```
+“Resize is happening”
+```
+
+***
+
+## 🔑 That signal is stored in: `sizeCtl`
+
+Without going too deep yet:
+
+* When resizing starts → `sizeCtl` becomes **negative**
+* Negative value = **resize in progress**
+
+***
+
+## 🧠 So how threads behave
+
+Whenever ANY thread does:
+
+```java
+put() / remove() / compute()
+```
+
+It checks:
+
+```java
+if resize is in progress → help transfer
+```
+
+***
+
+## 🎯 So answering your exact question:
+
+> “What about buckets that don’t have ForwardingNode yet?”
+
+👉 Those buckets are:
+
+> ✅ **NOT moved yet**
+
+BUT:
+
+> ❗ Threads still KNOW resizing is happening (via `sizeCtl`)
+
+***
+
+## 🔄 How work is picked
+
+Threads don’t wait for a signal per bucket.
+
+Instead they do:
+
+```
+grab a range of buckets using transferIndex
+```
+
+***
+
+## 🧠 Analogy
+
+Think of it like:
+
+```
+Global announcement:
+"Warehouse is being shifted"
+
+Workers:
+→ Pick random boxes and move them
+→ Mark each box as “moved” when done
+```
+
+***
+
+## 🔥 Important Insight
+
+| Concept        | Meaning               |
+| -------------- | --------------------- |
+| sizeCtl        | “Resize is happening” |
+| transferIndex  | “Work left to do”     |
+| ForwardingNode | “This bucket is DONE” |
+
+***
+
+# ❓ 2. “What exactly happens to the bucket during move?”
+
+## 🧠 Correct Answer:
+
+> ❗ We MOVE all nodes to new table
+
+> ❗ THEN replace old bucket with ONE ForwardingNode
+
+***
+
+## ⚙️ Step-by-step
+
+Let’s say:
+
+```
+tab[i] = Node A → Node B → Node C
+```
+
+***
+
+### 🟢 Step 1: Split nodes
+
+Into:
+
+```
+Low list  → stays at index i
+High list → goes to index i + oldCapacity
+```
+
+***
+
+### 🟡 Step 2: Insert into new table
+
+```
+newTab[i] = Low list
+newTab[i + oldCap] = High list
+```
+
+***
+
+### 🔴 Step 3: Replace old bucket
+
+```
+tab[i] = ForwardingNode(nextTable)
+```
+
+***
+
+## 🎯 Final state:
+
+### Old table:
+
+```
+tab[i] = ForwardingNode
+```
+
+### New table:
+
+```
+newTab[i] = nodes...
+newTab[i + oldCap] = nodes...
+```
+
+***
+
+## 🔥 So your statement:
+
+> “Old bucket only has one node i.e ForwardingNode?”
+
+👉 ✅ **YES — exactly correct**
+
+***
+
+## ❌ What does NOT happen
+
+> “Do we append ForwardingNode at end of list?”
+
+❌ NO
+
+We do NOT do:
+
+```
+A → B → C → ForwardingNode
+```
+
+***
+
+## 🧠 Why?
+
+Because:
+
+> ❗ Old data must NOT be used anymore
+
+ForwardingNode means:
+
+```
+“This bucket is dead — go to new table”
+```
+
+***
+
+# 🔁 What happens if another thread comes?
+
+***
+
+## Case 1: Thread hits moved bucket
+
+```
+tab[i] = ForwardingNode
+```
+
+👉 It does:
+
+```
+go to nextTable
+OR help transfer
+```
+
+***
+
+## Case 2: Thread hits NOT moved bucket
+
+```
+tab[j] = normal nodes
+```
+
+👉 It can:
+
+* still operate normally OR
+* help transfer (if resize detected)
+
+***
+
+# 🧠 Final Mental Model (This is the key)
+
+***
+
+## During resize:
+
+```
+Old Table:
+ ├── Bucket 0 → ForwardingNode ✅ moved
+ ├── Bucket 1 → normal nodes ❌ not moved
+ ├── Bucket 2 → ForwardingNode ✅ moved
+ ├── Bucket 3 → normal nodes ❌ not moved
+```
+
+***
+
+## Threads:
+
+* Don’t wait
+* Don’t coordinate explicitly
+* Just:
+  * detect resize (sizeCtl)
+  * pick work (transferIndex)
+  * mark completion (ForwardingNode)
+
+***
+
+# 🔥 Final Answers (Crisp)
+
+### Q1:
+
+> How do threads know to move buckets?
+
+✅ Via **global resize signal (****`sizeCtl < 0`****)**
+
+❌ Not via per-bucket signal
+
+***
+
+### Q2:
+
+> What happens to old bucket?
+
+✅ All nodes moved
+
+✅ Old bucket replaced with **single ForwardingNode**
+
+❌ Not appended
+
+***
+
+# ❓ 1. “How do we handle indices in Red-Black Tree buckets?”
+
+First, clear this misconception:
+
+> ❗ Trees do NOT manage indices
+
+***
+
+## 🧠 Key Idea
+
+Even when a bucket becomes a **Red-Black Tree**, the **index logic is still purely hash-based**:
+
+```java
+index = hash & (n - 1)
+```
+
+👉 Tree is just a **data structure inside ONE bucket**
+
+***
+
+## 📦 So:
+
+* Array → decides **bucket index**
+* Tree/List → manages **collisions inside that bucket**
+
+***
+
+## 🔥 During resize (VERY IMPORTANT)
+
+We do **NOT copy the tree as-is**
+
+Instead:
+
+> ❗ Tree is **split into TWO parts** (just like linked list)
+
+***
+
+## ⚙️ Tree splitting logic
+
+Each node checks:
+
+```java
+if ((hash & oldCap) == 0)
+    → goes to LOW bucket (same index)
+else
+    → goes to HIGH bucket (index + oldCap)
+```
+
+***
+
+## 🧠 What happens after split?
+
+Each side:
+
+* may remain a tree
+* OR may be converted back to linked list (if small)
+
+***
+
+## 🎯 So answer:
+
+> ❌ Do we directly copy Red-Black tree?
+
+👉 NO
+
+👉 We **split it into two groups** and rebuild structure
+
+***
+
+# ❓ 2. Your main confusion (this is the important one)
+
+Let’s restate your scenario:
+
+***
+
+## Given:
+
+* old capacity = 16
+* bucket index = 1
+* bucket size = 3
+* after resize → capacity = 32
+
+You said:
+
+> “Low list stays at 1, high list goes to 17”
+
+✅ Correct so far
+
+***
+
+## Now your question:
+
+> “If I insert a NEW node, will it go to 1 or 17?”
+
+***
+
+# 🧠 This is the CRITICAL concept:
+
+> ❗ New insertions NEVER follow old placement logic
+
+> ❗ They ALWAYS recompute index using NEW capacity
+
+***
+
+## ⚙️ New index calculation:
+
+```java
+index = hash & (newCapacity - 1)
+       = hash & 31
+```
+
+***
+
+## 🔥 So answer:
+
+> ❗ It does NOT do: `1 + 16 = 17` blindly
+
+Instead:
+
+👉 It recomputes hash:
+
+```java
+index = hash & 31
+```
+
+***
+
+## 🧠 Why old nodes split like that?
+
+Because:
+
+```java
+old index = hash & 15
+new index = hash & 31
+```
+
+Only ONE extra bit matters:
+
+```java
+bit = hash & 16
+```
+
+***
+
+## 🎯 So:
+
+| Condition | Goes to                   |
+| --------- | ------------------------- |
+| bit = 0   | index stays same (1)      |
+| bit = 1   | index becomes 1 + 16 = 17 |
+
+***
+
+## 💥 That’s why split works
+
+> It’s NOT arbitrary
+
+> It’s mathematically consistent with new hashing
+
+***
+
+# 🔁 Now your exact scenario
+
+### Existing nodes:
+
+* some go to index `1`
+* some go to index `17`
+
+***
+
+### New node insertion:
+
+👉 It will:
+
+1. compute hash
+2. do:
+
+```
+index = hash & 31
+```
+
+***
+
+### Result:
+
+* could go to `1`
+* OR `17`
+* OR any other bucket depending on hash
+
+***
+
+## ❗ Important Insight
+
+> Old nodes are split using **old hash knowledge**
+
+> New nodes use **fresh hash computation**
+
+***
+
+# 🧠 Final Mental Model
+
+***
+
+## Before resize (capacity = 16)
+
+```
+index = hash & 15
+→ bucket 1 has collisions
+```
+
+***
+
+## After resize (capacity = 32)
+
+```
+index = hash & 31
+```
+
+***
+
+### Bucket 1 splits into:
+
+```
+Bucket 1   → hashes where bit 16 = 0
+Bucket 17  → hashes where bit 16 = 1
+```
+
+***
+
+## New inserts:
+
+```
+They follow new rule ONLY
+```
+
+***
+
+# 🔥 Super Important Takeaway
+
+> ❗ `+ oldCap` is NOT insertion logic
+
+> ❗ It is ONLY used during resize split optimization
+
+***
+
+# 🚀 Why this design is genius
+
+* No rehashing needed
+* O(n) split instead of O(n log n)
+* Bitwise operation → extremely fast
+* Works identically for:
+  * LinkedList ✅
+  * Red-Black Tree ✅
+
+***
+
+# 🧠 Final Answers (Crisp)
+
+***
+
+### Q1: Tree index handling?
+
+❌ Tree does NOT manage indices
+
+✅ Array decides index
+
+✅ Tree only handles collisions
+
+***
+
+### Q2: Do we copy tree directly?
+
+❌ No
+
+✅ We split nodes into low/high
+
+✅ Rebuild tree or list
+
+***
+
+### Q3: New insertion goes to 1 or 17?
+
+❌ Not based on old position
+
+✅ Based on:
+
+```
+hash & (newCapacity - 1)
+```
+
+
+
+> Bucket has A → B → C
+
+> All have different hashes
+
+✅ **Correct** (even though they collided earlier)
+
+***
+
+> During transfer we do:
+
+> `existingHash & oldCap (16)`
+
+✅ **Correct**
+
+***
+
+> For new node we do:
+
+> `newHash & (newCap - 1)` → `& 31`
+
+✅ **Correct**
+
+***
+
+# 🔥 So what’s the subtle correction?
+
+You said:
+
+> “existingHash & 16”
+
+👉 This is correct **BUT incomplete mental model**
+
+***
+
+# 🧠 The FULL logic during transfer
+
+We are NOT computing full index again.
+
+We are doing:
+
+```java
+if ((hash & oldCap) == 0)
+    → goes to LOW (index stays same)
+else
+    → goes to HIGH (index + oldCap)
+```
+
+***
+
+# ❗ Important nuance
+
+We are NOT doing:
+
+```java
+newIndex = hash & 31   // ❌ during transfer
+```
+
+Even though it would give same result.
+
+***
+
+# 🔥 Why?
+
+Because:
+
+> Checking ONE bit is faster than recomputing full index
+
+***
+
+# 📦 Let’s walk your example properly
+
+***
+
+## Given:
+
+* oldCap = 16
+* newCap = 32
+* bucket index = 1
+
+Nodes:
+
+| Node | Hash (binary last bits) |
+| ---- | ----------------------- |
+| A    | xxxx0001                |
+| B    | xxxx1001                |
+| C    | xxxx0001                |
+
+***
+
+## Step 1: Check `(hash & 16)`
+
+***
+
+### Node A:
+
+```java
+hash & 16 = 0
+→ LOW → stays at index 1
+```
+
+***
+
+### Node B:
+
+```java
+hash & 16 = 16
+→ HIGH → goes to index 17
+```
+
+***
+
+### Node C:
+
+```java
+hash & 16 = 0
+→ LOW → stays at index 1
+```
+
+***
+
+## Final:
+
+```
+Bucket 1  → A, C
+Bucket 17 → B
+```
+
+***
+
+# 🧠 Now your second part (VERY IMPORTANT)
+
+> “For new node we calculate hash & 31?”
+
+👉 ✅ **YES — 100% correct**
+
+***
+
+# 🔥 So difference is:
+
+| Operation            | Logic                 |
+| -------------------- | --------------------- |
+| Transfer (old nodes) | `hash & oldCap`       |
+| New insertion        | `hash & (newCap - 1)` |
+
+***
+
+# ❗ Why two different methods?
+
+Because:
+
+### During transfer:
+
+We already KNOW old index → we just split
+
+***
+
+### During new insert:
+
+We have NO prior info → must compute full index
+
+***
+
+# 🧠 This is the BIG insight
+
+> ❗ Transfer = optimization
+
+> ❗ Insert = normal hashing
+
+***
+
+# 🔥 Final mental model
+
+***
+
+## During resize:
+
+```
+Old nodes:
+→ use hash & oldCap
+→ split into LOW / HIGH
+
+New nodes:
+→ use hash & (newCap - 1)
+→ direct placement
+```
+
+***
+
+# 🚀 Why this design is genius
+
+* Avoids full recomputation for existing data
+* Keeps insertion logic simple
+* Maintains consistency
+* Extremely cache-efficient
+
+***
+
+# 🎯 Final Answer (Crisp)
+
+***
+
+### ✔ Existing nodes:
+
+```
+(hash & oldCap)
+```
+
+***
+
+### ✔ New nodes:
+
+```
+(hash & (newCap - 1))
+```
+
+***
+
