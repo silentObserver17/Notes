@@ -1832,3 +1832,435 @@ const decrypted = crypto.privateDecrypt(
 
 > “RSA is an asymmetric cryptosystem based on the hardness of integer factorization. It uses a public-private key pair where encryption is performed using modular exponentiation with the public key, and decryption uses the private key. In practice, RSA is used with padding schemes like OAEP for encryption and PSS for signatures, and is primarily used for key exchange and authentication rather than bulk data encryption.”
 
+
+## Message Authentication Codes (MACs)
+---
+A **MAC** is a short tag attached to a message that proves two things simultaneously:
+- **Integrity** — the message has not been tampered with
+- **Authenticity** — the message came from someone who holds the shared secret key
+
+#### The Core Problem
+Suppose you send:
+```
+message → "Transfer ₹10,000"
+```
+
+An attacker can:
+- Modify it → `"Transfer ₹1,00,000"`
+- Forward it
+
+👉 Encryption alone **does not prevent tampering**
+
+Unlike a hash, a MAC requires a secret key. Unlike a digital signature, it uses a _symmetric_ key — the same key both generates and verifies the tag.
+```
+MAC(key, message) → tag
+
+Sender:   tag = MAC(k, m)   →  sends (m, tag)
+Receiver: tag' = MAC(k, m)  →  checks tag == tag'
+```
+
+#### Security Goal: Existential Unforgeability (EU-CMA)
+The formal security definition is **Existential Unforgeablility under Chosen Message Attack.**
+
+An adversary wins if they can produce a valid `(m, tag)` pair for _any_ message `m` — even one they chose — without knowing the key. The adversary is allowed to query a MAC oracle polynomially many times. If no adversary can win with non-negligible probability, the MAC is secure.
+
+This is a strong guarantee: it rules out forgery even when the attacker can adaptively choose messages and observe their tags.
+
+#### Why Hashing Alone Fails
+---
+#### 🔑 First, how SHA-256 actually works internally
+
+SHA-256 uses a construction called **Merkle-Damgård**. It doesn't hash your message all at once — it processes it in **512-bit chunks**, feeding each chunk into a compression function along with the previous output:
+
+```
+Initial State (IV)
+      │
+      ▼
+┌─────────────┐
+│  compress   │ ◄── chunk 1 of message
+└─────────────┘
+      │
+      ▼
+┌─────────────┐
+│  compress   │ ◄── chunk 2 of message
+└─────────────┘
+      │
+      ▼
+   Final Hash
+```
+
+**Critical detail:** The final hash output _is_ the internal state after the last compression. It's not sealed or finalized in a way that prevents resumption.
+
+##### The Length Extension Attack
+Imagine you send a message and a tag:
+- **Message:** "Buy 10 apples"
+    
+- **Key:** (Secret, you don't know it)
+    
+- **Tag:** $SHA256(Secret \parallel \text{"Buy 10 apples"})$
+
+As an attacker, I see the tag `abcd123...`. Because of how SHA-256 works, I know that `abcd123...` is the **exact internal state** the hash function was in after processing our message.
+
+I don't need the secret key to continue grinding! I can:
+1. Take that tag (`abcd123...`) and manually set it as the "starting state" of my own hash function.
+    
+2. Add my own data: " and 100 oranges".
+    
+3. Tell the hash function to keep grinding.
+
+The result is a valid tag for $(Secret \parallel \text{"Buy 10 apples"} \parallel \text{" and 100 oranges"})$, and I did it all without ever knowing what the `Secret` was.
+
+#### Consequences of a **Length Extension Attack**
+###### 1. Unauthorized Command Injection
+In the early days of the web, many APIs used simple keyed hashes for authentication.
+- **Original Request:** `user_id=10&action=view_profile&signature=abcd...`
+    
+- **The Attack:** An attacker sees this and appends `&action=delete_account` or `&is_admin=true`.
+- **The Result:** The server receives the long string, sees a "valid" signature at the end (because the attacker re-calculated it), and processes the malicious command. The server thinks, "Well, the signature matches the data, so the person with the secret key must have sent this!"
+
+##### 2. File and Data Corruption
+If a system uses keyed hashes to verify the integrity of a downloaded file (like a software update), an attacker could:
+- Append malicious code or a "backdoor" to the end of a legitimate file.
+    
+- Update the hash tag using length extension.
+    
+- The installer checks the hash, sees it matches, and runs the malicious code.
+
+##### 3. Financial Fraud
+Imagine a banking instruction sent via a keyed hash:
+
+- **Message:** `from=Alice&to=Bob&amount=100`
+    
+- **Attacker appends:** `&amount=5000`
+    
+- In many parsing systems (like URL query strings), if a variable is defined twice, the **last one** wins. The server might see two "amount" fields and only process the second one, effectively stealing $4,900 more than Alice intended.
+
+### Core Constructions
+---
+#### 1. HMAC (Hash-based MAC)
+
+HMAC, or **Hash-based Message Authentication Code**, is a specific type of message authentication code (MAC) that involves a cryptographic hash function and a secret cryptographic key.
+
+Think of it as a **digital wax seal**. It doesn't just prove that the message hasn't been tampered with (integrity); it also proves that the person who sent it is who they claim to be (authenticity), because only someone with the secret key could have created that specific seal.
+
+###### How It Works
+Unlike a simple hash (like SHA-256), which anyone can generate for any piece of data, an HMAC requires a **Secret Key**. If the data or the key changes by even a single bit, the resulting HMAC will be completely different.
+
+#### The Two-Pass Process
+HMAC is more than just hashing a key and a message together. It uses a "nested" hashing approach to protect against certain types of cryptographic attacks (like length-extension attacks).
+
+1. **Inner Hash:** The key is mixed with an "inner padding" (ipad) and hashed along with the message.
+    
+2. **Outer Hash:** The result of the first hash is then mixed with the key and an "outer padding" (opad) and hashed again.
+
+The mathematical representation looks like this:
+
+$$HMAC(K, m) = H((K \oplus opad) \parallel H((K \oplus ipad) \parallel m))$$
+##### Why Use HMAC?
+- **Integrity:** You can be sure the data wasn't altered in transit.
+    
+- **Authenticity:** You can be sure the sender knows the secret key.
+    
+- **Efficiency:** It is much faster than digital signatures (like RSA) because it relies on symmetric cryptography rather than complex asymmetric math.
+
+##### Common Use Cases
+- **API Security:** When you make a request to an API (like AWS or Stripe), you often sign the request with an HMAC so the server knows it’s really you.
+    
+- **JWT (JSON Web Tokens):** HMAC is frequently used to sign tokens to ensure they haven't been forged by a user.
+    
+- **Challenge-Response:** Used in protocols to verify a user's identity without ever sending their actual password over the network.
+
+
+HMAC is the "sturdy tractor" of the MAC world—reliable and everywhere. But in the world of high-speed web traffic and mobile devices, we need something more like a "Formula 1 engine."
+
+This is where **AEAD (Authenticated Encryption with Associated Data)** comes in. Instead of you manually combining a cipher and a MAC (which is where many developers make mistakes), AEAD modes like **AES-GCM** and **ChaCha20-Poly1305** do both at once
+
+#### 2. GMAC (used in AES-GCM)
+
+The "MAC" part of AES-GCM is actually called **GHASH**. When used on its own, it’s called **GMAC**.
+##### How it works:
+
+It uses "Galois Field" math (a type of binary polynomial arithmetic). It takes the ciphertext, breaks it into blocks, and multiplies them together in a very specific mathematical field ($GF(2^{128})$).
+
+- **The Big Advantage:** **Parallelism.** Unlike HMAC, which has to process data bit-by-bit in order, GMAC can be "unrolled." Modern CPUs (Intel and AMD) have a special instruction called **CLMUL** specifically designed to do this math instantly.
+    
+- **The Catch:** It is notoriously difficult to implement safely in software. If you don't have that specific hardware acceleration, it is slow and vulnerable to **timing attacks** (where an attacker guesses your key by measuring how many milliseconds the math took).
+
+#### Poly1305 (used in ChaCha20-Poly1305)
+
+Poly1305 is the "software-optimized" alternative to GMAC.
+##### How it works:
+
+It is a **One-Time Authenticator**. It uses prime-field math ($2^{130} - 5$) to calculate the tag.
+
+- **The Big Advantage:** **Speed in software.** Poly1305 doesn't need special CPU instructions to be fast. It runs beautifully on mobile phones, older computers, and IoT devices that don't have dedicated AES hardware.
+    
+- **The Catch:** It is a "one-time" MAC. For every single message, a new sub-key must be generated (usually by the ChaCha20 cipher). If you ever use the same Poly1305 key for two different messages, **the security is instantly broken** and an attacker can forge messages.
+
+#### The Great Showdown: GMAC vs. Poly1305
+|**Feature**|**GMAC (AES-GCM)**|**Poly1305 (ChaCha20-Poly1305)**|
+|---|---|---|
+|**Primary Strength**|Blazing fast on servers (with AES-NI).|Blazing fast on mobile/software.|
+|**Math Style**|Binary Polynomials ($GF(2^{128})$).|Prime Field Arithmetic ($2^{130}-5$).|
+|**Vulnerability**|Timing attacks (if no hardware).|Nonce reuse (catastrophic failure).|
+|**Best For**|Data centers, high-end laptops.|Smartphones, Smartwatches, VPNs (WireGuard).|
+
+#### Why did we move away from HMAC in these cases?
+
+1. **Performance:** HMAC requires two passes over the data (inner and outer hash). AEAD MACs like GMAC and Poly1305 are designed to process the data in **one pass** as it is being encrypted.
+    
+2. **Atomicity:** By using an AEAD mode, you don't have to worry about whether to "Encrypt-then-MAC" or "MAC-then-Encrypt." The algorithm handles the binding between the ciphertext and the tag for you, eliminating a huge class of cryptographic errors.
+
+#### The "Golden Rule" of AEAD MACs
+
+Both of these rely on a **Nonce** (a number used only once).
+- In **HMAC**, if you reuse a key, it’s not ideal, but it’s not an immediate disaster.
+    
+- In **AES-GCM** or **ChaCha20-Poly1305**, if you reuse a **Nonce + Key** combination, the attacker can mathematically derive the authentication key and forge any message they want.
+
+> “A Message Authentication Code (MAC) is a cryptographic primitive that provides data integrity and authentication using a shared secret key. It ensures that a message has not been modified and originates from a trusted source. Secure MAC constructions like HMAC prevent attacks such as length extension, while modern systems integrate MACs into AEAD schemes like AES-GCM and ChaCha20-Poly1305 to provide authenticated encryption with strong security guarantees.”
+
+
+### KEK/DEK Pattern — Key Wrapping & Envelope Encryption
+---
+##### The Core Idea
+You never encrypt data directly with your master key. Instead you maintain a two-layer hierarchy:
+
+```
+Master Secret
+     ↓
+    KEK  ─────────────┐
+     ↓                │
+ [wraps]              │
+     ↓                │
+    DEK  ──encrypt──→ Data
+```
+
+The KEK's **only job** is to wrap DEKs. It never sees plaintext data. The DEK's **only job** is to encrypt one logical item, then it's discarded from memory.
+
+##### Why Not Just Encrypt Everything With the KEK?
+This is the central question. The answer is multi-dimensional:
+
+##### 1. Key Rotation Becomes Cheap
+If you encrypt 10 million items with the KEK directly, rotating the KEK means **re-encrypting 10 million items**. With envelope encryption:
+```
+Old KEK → re-wrap 10 million small DEKs  (fast, DEK re-encrypt is trivial)
+New KEK → done
+
+vs.
+
+Old KEK → decrypt + re-encrypt 10 million blobs  (expensive, risky)
+```
+
+You only touch the tiny DEK blobs (~32 bytes each), not the actual data.
+
+##### 2. Blast Radius of Compromise
+If a single DEK is compromised, only **one item** is exposed. If the KEK is compromised, you rotate it and re-wrap DEKs — the actual plaintext data was never directly accessible through the KEK alone. An attacker needs both the wrapped DEK **and** the KEK to decrypt anything.
+
+#### Cryptographic Hygiene — Key/Data Separation
+Every cryptographic key has a recommended **usage limit** before you should rotate. AES-GCM with random nonces, for example, risks nonce collision beyond ~2³² encryptions under the same key (birthday bound). By giving each item its own DEK:
+
+- Each DEK encrypts exactly one item → zero collision risk
+- The KEK only performs `N_items` wrap operations, which is far fewer than the data volume
+
+##### 4. Access Control Granularity
+
+You can implement **per-user or per-item key access** without multiple copies of the data:
+
+```
+Item ciphertext  (one copy)
+     │
+     ├── wrappedDek_userA  (KEK_A wraps the DEK)
+     ├── wrappedDek_userB  (KEK_B wraps the same DEK)
+     └── wrappedDek_admin  (KEK_admin wraps the same DEK)
+```
+
+Revoke userA → delete their wrapped DEK. The ciphertext and other users are untouched.
+
+```ts
+export function encryptVaultItem(input: {
+  plaintext: string;
+  kek: Uint8Array;
+  aead: XChaCha20Poly1305Aead;
+  associatedData?: Uint8Array;
+}): EncryptedVaultItem {
+  if (input.kek.length !== input.aead.keyLength) {
+    throw new Error("kek length does not match cipher key length");
+  }
+
+  const itemDek = randomBytes(input.aead.keyLength);
+  try {
+    const nonce = randomBytes(input.aead.nonceLength);
+    const wrapNonce = randomBytes(input.aead.nonceLength);
+
+    const ciphertext = input.aead.encrypt({
+      key: itemDek,
+      nonce,
+      plaintext: utf8ToBytes(input.plaintext),
+      associatedData: input.associatedData,
+    });
+
+    const wrappedDek = input.aead.encrypt({
+      key: input.kek,
+      nonce: wrapNonce,
+      plaintext: itemDek,
+      associatedData: utf8ToBytes(DEK_WRAP_AAD),
+    });
+
+    return {
+      version: "xchacha20poly1305-v1",
+      nonce: toBase64(nonce),
+      ciphertext: toBase64(ciphertext),
+      wrappedDek: toBase64(wrappedDek),
+      wrapNonce: toBase64(wrapNonce),
+    };
+  } finally {
+    itemDek.fill(0);
+  }
+}
+
+export function decryptVaultItem(input: {
+  payload: EncryptedVaultItem;
+  kek: Uint8Array;
+  aead: XChaCha20Poly1305Aead;
+  associatedData?: Uint8Array;
+}): string {
+  if (input.payload.version !== "xchacha20poly1305-v1") {
+    throw new Error("unsupported vault item version");
+  }
+  if (input.kek.length !== input.aead.keyLength) {
+    throw new Error("kek length does not match cipher key length");
+  }
+  if (!input.payload.nonce || !input.payload.wrapNonce || !input.payload.ciphertext || !input.payload.wrappedDek) {
+    throw new Error("payload is missing required encrypted fields");
+  }
+
+  const wrapNonce = decodeBase64Field(input.payload.wrapNonce, "wrapNonce", input.aead.nonceLength);
+  const wrappedDek = decodeBase64Field(input.payload.wrappedDek, "wrappedDek");
+  const nonce = decodeBase64Field(input.payload.nonce, "nonce", input.aead.nonceLength);
+  const ciphertext = decodeBase64Field(input.payload.ciphertext, "ciphertext");
+
+  const itemDek = input.aead.decrypt({
+    key: input.kek,
+    nonce: wrapNonce,
+    ciphertext: wrappedDek,
+    associatedData: utf8ToBytes(DEK_WRAP_AAD),
+  });
+  if (itemDek.length !== input.aead.keyLength) {
+    throw new Error("wrapped DEK has unexpected key length");
+  }
+
+  const plaintext = input.aead.decrypt({
+    key: itemDek,
+    nonce,
+    ciphertext,
+    associatedData: input.associatedData,
+  });
+
+  return bytesToUtf8(plaintext);
+}
+```
+
+
+### 🔐 Encryption — `encryptVaultItem`
+```
+plaintext  +  kek  +  aead
+      │
+      ▼
+① itemDek = randomBytes(32)
+      │         └── born here, lives only in memory
+      │
+      ▼
+② nonce     = randomBytes(24)    ← for data layer
+  wrapNonce = randomBytes(24)    ← for key wrap layer
+  (both are public, not secret)
+      │
+      ▼
+③ LAYER 1 — Encrypt data with DEK
+  ciphertext = aead.encrypt({
+      key:   itemDek,
+      nonce: nonce,
+      pt:    utf8ToBytes(plaintext),
+      aad:   input.associatedData
+  })                              ← KEK never touches data
+      │
+      ▼
+④ LAYER 2 — Wrap DEK with KEK
+  wrappedDek = aead.encrypt({
+      key:   kek,
+      nonce: wrapNonce,
+      pt:    itemDek,             ← DEK is plaintext here
+      aad:   "dek-wrap-v1"       ← domain separation
+  })
+      │
+      ▼
+⑤ itemDek.fill(0)                ← zeroed in finally block,
+      │                             even if exception thrown
+      ▼
+⑥ return {
+      version:    "xchacha20poly1305-v1",
+      nonce:      base64(nonce),       ← public
+      ciphertext: base64(ciphertext),  ← data encrypted by DEK
+      wrappedDek: base64(wrappedDek),  ← DEK encrypted by KEK
+      wrapNonce:  base64(wrapNonce),   ← public
+  }
+```
+
+### 🔓Decryption — `decryptVaultItem`
+```
+payload  +  kek  +  aead
+      │
+      ▼
+① Version check
+  payload.version !== "xchacha20poly1305-v1"  → throw
+  any missing field (nonce/ciphertext/etc)    → throw
+      │
+      ▼
+② Decode base64 fields → raw bytes
+  wrapNonce  = decodeBase64(payload.wrapNonce)
+  wrappedDek = decodeBase64(payload.wrappedDek)
+  nonce      = decodeBase64(payload.nonce)
+  ciphertext = decodeBase64(payload.ciphertext)
+      │
+      ▼
+③ LAYER 1 — Unwrap DEK using KEK
+  itemDek = aead.decrypt({
+      key:   kek,               ← re-derived: Argon2id(passphrase, salt)
+      nonce: wrapNonce,
+      ct:    wrappedDek,
+      aad:   "dek-wrap-v1"     ← must match encrypt-time AAD exactly
+  })
+  ↑ Poly1305 tag verified here
+  wrong passphrase → wrong KEK → tag mismatch → THROW ❌
+  correct passphrase → itemDek recovered ✓
+      │
+      ▼
+④ itemDek.length !== 32  →  throw   ← corrupted payload guard
+      │
+      ▼
+⑤ LAYER 2 — Decrypt ciphertext with DEK
+  plaintext = aead.decrypt({
+      key:   itemDek,
+      nonce: nonce,
+      ct:    ciphertext,
+      aad:   input.associatedData
+  })
+  ↑ Poly1305 tag verified here
+  tampered ciphertext → tag mismatch → THROW ❌
+      │
+      ▼
+⑥ return bytesToUtf8(plaintext)  →  "your original string" ✓
+```
+
+#### Where Each Error Fires
+
+| Scenario              | Fails at step | Why                                              |
+| --------------------- | ------------- | ------------------------------------------------ |
+| Wrong passphrase      | ③             | KEK wrong → Poly1305 tag on `wrappedDek` fails   |
+| Tampered ciphertext   | ⑤             | DEK correct but data tag fails                   |
+| Tampered `wrappedDek` | ③             | Tag on the wrap blob fails                       |
+| Wrong AAD on unwrap   | ③             | AAD is part of tag computation — mismatch = fail |
+| Swapped blob types    | ③             | `"dek-wrap-v1"` AAD rejects non-wrap blobs       |
+| Missing fields        | ①             | Early guard throws before any crypto runs        |
+
+> “The KEK/DEK pattern, also known as envelope encryption, separates key management from data encryption by using a master key (KEK) to encrypt per-item data keys (DEKs). Each DEK encrypts individual data items, providing compartmentalization and efficient key rotation. In modern systems, AEAD is used both for encrypting data and wrapping DEKs, ensuring confidentiality and integrity. This design limits the impact of key compromise and allows re-keying without re-encrypting all data.”
