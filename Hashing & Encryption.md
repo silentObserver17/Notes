@@ -2264,3 +2264,101 @@ payload  +  kek  +  aead
 | Missing fields        | ①             | Early guard throws before any crypto runs        |
 
 > “The KEK/DEK pattern, also known as envelope encryption, separates key management from data encryption by using a master key (KEK) to encrypt per-item data keys (DEKs). Each DEK encrypts individual data items, providing compartmentalization and efficient key rotation. In modern systems, AEAD is used both for encrypting data and wrapping DEKs, ensuring confidentiality and integrity. This design limits the impact of key compromise and allows re-keying without re-encrypting all data.”
+
+
+## ENCODING
+---
+> **Encoding = converting data into a different format for transport/storage**
+
+👉 **No secrecy. No security. Just representation.**
+
+The primary goal of encoding is not security, but rather **data usability, standardization, and safe transmission** across different systems.
+
+To put it simply: Encoding ensures that when a computer in Japan sends a smiling emoji or a complex file to a computer in Brazil, the receiving computer understands exactly what was sent.
+#### Encoding vs Encryption vs Hashing
+|Concept|Purpose|Reversible|Secret Key|
+|---|---|---|---|
+|Encoding|Format conversion|✅ Yes|❌ No|
+|Encryption|Hide data|✅ Yes|✅ Yes|
+|Hashing|Fingerprint|❌ No|❌ No|
+#### Why Encoding is Needed
+
+Computers deal with **bytes**, but we often need:
+
+- Strings (JSON, HTTP headers)
+- URLs
+- Databases
+
+👉 So we encode binary → text
+
+#### Major Types of Encoding
+---
+#### 1. Character Encoding
+Computers only understand numbers (specifically, binary 0s and 1s). Character encoding is the dictionary that maps human-readable characters (letters, numbers, punctuation, emojis) to specific numbers.
+- **ASCII (American Standard Code for Information Interchange):** An older, 7-bit system that represents 128 characters (English alphabet, numbers, basic punctuation). For example, the capital letter `A` is represented by the number `65`.
+    
+- **Unicode:** A modern standard designed to cover all characters in all human languages, plus technical symbols and emojis.
+    
+- **UTF-8 (8-bit Unicode Transformation Format):** The most common way Unicode is implemented on the web today. It is backward-compatible with ASCII and uses variable lengths (1 to 4 bytes) to represent characters.
+    
+    - _Example:_ The letter `A` is 1 byte, but the `😊` emoji is 4 bytes.
+
+| Feature         | **Unicode**                                              | **UTF-8**                                                                 |
+| --------------- | -------------------------------------------------------- | ------------------------------------------------------------------------- |
+| **What is it?** | A **Character Set** (A Map).                             | An **Encoding** (A Language).                                             |
+| **Role**        | Assigns a unique number (Code Point) to every character. | Defines _how_ those numbers are saved as bits/bytes in memory.            |
+| **Example**     | The letter `A` is mapped to the number **U+0041**.       | Tells the computer to save **U+0041** using exactly one byte: `01000001`. |
+- **Unicode** is the **Dictionary**: It tells you that a "House" is entry #120.
+    
+- **UTF-8** is the **Handwriting**: It defines whether you write that number "120" using a pen, a pencil, or carved into stone. You can have other "handwritings" for Unicode, like **UTF-16** or **UTF-32**, but UTF-8 is the most efficient and popular.
+
+#### 2. Binary-to-Text Encoding
+This is the process of converting binary data (8-bit bytes) into a format consisting only of printable characters. This is essential when sending non-text data (like images, audio, or encrypted blobs) through systems that were only built to handle plain text (like SMTP for email or JSON APIs).
+
+- **Base64:** The most common binary-to-text encoding. It divides every 3 bytes (24 bits) of data into four 6-bit chunks. Each 6-bit chunk corresponds to one of 64 characters in the Base64 alphabet (`A-Z`, `a-z`, `0-9`, `+`, and `/`).
+    
+    - **The Padding (`=`):** If the input data isn't a multiple of 3 bytes, "padding" characters (`=`) are added to the end to ensure the encoded string is the correct length.
+        
+    - **Use Case:** Used for email attachments, embedding small icons in CSS files, and passing authentication credentials in HTTP headers.
+        
+    - **Trade-off:** Because it uses 4 characters to represent 3 bytes, the file size increases by approximately **33%**.
+
+- **Hexadecimal (Hex/Base16):** Represents each byte as two characters from the set `0-9` and `A-F`.
+    
+    - **Use Case:** Primarily used by developers to view raw memory, define colors in CSS (e.g., `#4A90E2`), or represent cryptographic hashes (like SHA-256 results).
+        
+    - **Trade-off:** It is less efficient than Base64, increasing file size by **100%** (2 characters for every 1 byte).
+
+### 3. URL Encoding (Percent-Encoding)
+
+URLs can only be sent using a subset of ASCII. Special characters must be encoded.
+- _Space_ becomes `%20` or `+`
+- _Exclamation mark (`!`)_ becomes `%21`
+
+Used in:
+- Query params
+- HTTP requests
+
+### 4. HTML Encoding (Entity Encoding)
+
+Used to display special characters on a webpage without the browser thinking they are code.
+
+- `<` becomes `&lt;`
+- `>` becomes `&gt;`
+
+### 5. Media Encoding (Compression Codecs)
+
+Converts raw audio/video into compressed formats (Codecs).
+- **Audio:** MP3, AAC, FLAC.
+- **Video:** H.264, H.265 (HEVC), VP9.
+
+#### Why is Encoding Essential?
+
+1. **Cross-Platform Compatibility:** Ensures text looks the same on Windows, Mac, and Linux (thanks to UTF-8).
+    
+2. **Safe Data Transmission:** Protocols like HTTP/Email have strict rules; encoding hides "illegal" characters so they can pass through.
+    
+3. **Data Storage:** Media encoding makes files small enough to store and stream.
+    
+4. **Security (XSS Prevention):** HTML encoding prevents malicious scripts from running in a browser.
+
