@@ -1,4 +1,4 @@
-Love this question — this is exactly the kind of foundation that makes system design feel *structured instead of chaotic*. Let’s break this into something you can actually *use during interviews and real systems*.
+Love this question — this is exactly the kind of foundation that makes system design feel *structured instead of chaotic*. Let’s break this into something you can actually *use during topics and real systems*.
 
 ---
 
@@ -191,7 +191,7 @@ Used in:
 
 ---
 
-# ⚡ 4. System Design Level Patterns (MOST IMPORTANT FOR INTERVIEWS)
+# ⚡ 4. System Design Level Patterns (MOST IMPORTANT FOR topics)
 
 This is where things get real.
 
