@@ -562,3 +562,154 @@ You’re already moving in a strong direction based on the topics you’ve been 
 * clean backend architecture.
 
 Those are exactly the kinds of topics that push someone from “API developer” toward “serious backend engineer.”
+
+Good instinct. This section is large enough that going in without a plan means you'll either rush through it or lose the thread halfway. Let me break it down into logical groups that build on each other.
+
+---
+
+## How This Section Is Structured
+
+There are three distinct layers here, and they build on each other in a specific order. You cannot reason about goroutine leaks without understanding channels. You cannot understand backpressure without understanding worker pools. The grouping below reflects that dependency chain.
+
+---
+
+## Layer 1 — The Primitives (What exists and how it works)
+
+These are the building blocks. Everything else is composed from these.
+
+**Session 1A: Goroutines + Scheduler**
+- What a goroutine actually is at the runtime level
+- The G-M-P model in depth
+- Stack growth, goroutine lifecycle
+- `go` keyword semantics, function values, closures in goroutines
+- `runtime.GOMAXPROCS`, `runtime.NumGoroutine`
+- Work stealing
+
+These go together because understanding G-M-P explains why goroutines are cheap, which motivates why Go uses them so heavily, which motivates the rest of the section.
+
+**Session 1B: Channels — the full model**
+- Channel internals (`hchan` structure)
+- Unbuffered vs buffered — the exact blocking semantics
+- Directional channels (`chan<-`, `<-chan`) and why they exist
+- Closing channels — rules, panics, the closed channel idiom
+- `range` over channels
+- Nil channel behaviour (blocks forever — useful in select)
+- Channel as semaphore, channel as signal, channel as queue
+
+Channels are the most nuanced primitive. The closing semantics and nil channel behaviour alone have enough gotchas to fill an interview.
+
+**Session 1C: Select statement**
+- How select chooses when multiple cases are ready (uniform random)
+- Default case — non-blocking operations
+- Nil channel in select (never selected — useful for disabling a case)
+- Timeout pattern with `time.After`
+- Done channel pattern
+- Priority select (when you need one case to take precedence)
+
+Select is inseparable from channels in practice. Treat them as one topic but split for depth.
+
+---
+
+## Layer 2 — The Patterns (How primitives combine into reusable shapes)
+
+**Session 2A: Core concurrency patterns**
+- Done channel / quit signal
+- Pipeline pattern (stage → stage → stage via channels)
+- Fan-out (one input channel → multiple workers)
+- Fan-in (multiple channels → one merged output channel)
+- Worker pool (bounded concurrency over a job queue)
+
+These four patterns appear in virtually every real Go codebase and in almost every senior Go interview. Each has a canonical implementation worth memorising.
+
+**Session 2B: Synchronisation primitives**
+- `sync.Mutex` and `sync.RWMutex` — internals, fairness, lock contention
+- `sync.WaitGroup` — the Add/Done/Wait lifecycle
+- `sync.Once` — lazy init, the double-checked locking equivalent
+- `sync.Cond` — when channels aren't enough
+- `sync/atomic` — CAS loops, memory ordering (covered in memory section but revisit here in concurrency context)
+- `sync.Map` — when to use vs mutex+map
+
+You covered these in Phase 1, so this is a revisit with a focus on how they interact with channels and goroutines in real patterns.
+
+**Session 2C: Timeouts and cancellation**
+- `context.WithTimeout` / `context.WithDeadline` / `context.WithCancel`
+- Propagating cancellation through goroutine trees
+- The select + ctx.Done() pattern
+- Cleaning up goroutines on cancellation
+- `time.After` vs `time.NewTimer` (leak implications)
+
+This overlaps with the context section you've already done. Here the focus is narrower: how cancellation interacts specifically with goroutines and channels.
+
+---
+
+## Layer 3 — The Hard Problems (What goes wrong and how to prevent it)
+
+**Session 3A: Failure modes**
+- Goroutine leaks — every way they happen, how to detect, how to fix
+- Deadlocks — the four conditions, how to recognise patterns, Go's deadlock detector
+- Race conditions — what they are at the CPU level, the race detector, common patterns
+
+**Session 3B: Production concerns**
+- Backpressure — what it is, why it matters, how to implement it with bounded channels and worker pools
+- Concurrency limiting — semaphore pattern, `golang.org/x/sync/semaphore`, `errgroup`
+- Rate limiting — token bucket with `golang.org/x/time/rate`
+- The `errgroup` package — structured goroutine lifecycle with error propagation
+
+---
+
+## Suggested Session Order
+
+```
+Session 1A  →  Session 1B  →  Session 1C
+                    ↓
+Session 2A  →  Session 2B  →  Session 2C
+                    ↓
+Session 3A  →  Session 3B
+```
+
+Each session builds directly on the previous. Sessions 1A through 1C are the most important to get completely right before moving to patterns, because every mistake in understanding primitives compounds into wrong mental models for the patterns.
+
+---
+
+## What the Interview Actually Tests
+
+To calibrate what depth is needed: Go interviews at the senior level are not testing whether you know the API. They assume you know the API. What they actually test is:
+
+**Can you reason about what happens when things go wrong?**
+- "What happens if the goroutine writing to this channel exits before the reader?" → leak
+- "What happens if two goroutines both try to close this channel?" → panic
+- "This looks correct — why does it deadlock?" → recognise the pattern
+
+**Can you identify the pattern and name it?**
+- "Walk me through how you'd implement a worker pool." → expect canonical implementation
+- "How would you fan-in three channels?" → expect the goroutine-per-channel pattern
+
+**Can you trade off between approaches?**
+- "When would you use a mutex instead of a channel?"
+- "When is a buffered channel the wrong choice?"
+- "How would you limit concurrency in this pipeline?"
+
+**Can you reason about the scheduler?**
+- "Why is this goroutine not getting scheduled?"
+- "What does GOMAXPROCS do and when would you change it?"
+- "How does work stealing affect this design?"
+
+---
+
+## Recommended Approach
+
+Given all of this, here is how I'd suggest we run the sessions:
+
+1. **Session 1A** — Goroutines + G-M-P scheduler in depth
+2. **Session 1B** — Channels in full depth including internals and all edge cases
+3. **Session 1C** — Select statement
+4. **Session 2A** — All four core patterns with canonical implementations
+5. **Session 2B** — Sync primitives revisited in concurrency context
+6. **Session 2C** — Timeouts and cancellation in goroutine context
+7. **Session 3A** — Failure modes: leaks, deadlocks, races
+8. **Session 3B** — Production: backpressure, limiting, errgroup
+
+Each session will follow the same format as the previous phases: mental model first, then mechanics, then code, then gotchas.
+
+---
+
